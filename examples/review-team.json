@@ -1,0 +1,42 @@
+{
+  "name": "repository-review",
+  "goal": "Review the repository, verify the important findings, and produce one implementation plan.",
+  "maxParallel": 8,
+  "tasks": [
+    {
+      "id": "architecture",
+      "title": "Architecture review",
+      "prompt": "Map the architecture. Find the highest-risk boundaries.",
+      "harness": "claude",
+      "model": "opus",
+      "host": "local",
+      "repo": "/path/to/repo"
+    },
+    {
+      "id": "correctness",
+      "title": "Correctness review",
+      "prompt": "Find concrete correctness defects. Include file and line evidence.",
+      "harness": "codex",
+      "host": "local",
+      "repo": "/path/to/repo"
+    },
+    {
+      "id": "independent-review",
+      "title": "Independent review",
+      "prompt": "Audit the same repository independently. Challenge weak assumptions.",
+      "harness": "kimi",
+      "host": "vps",
+      "repo": "/home/usman/work/repo"
+    },
+    {
+      "id": "synthesis",
+      "title": "Synthesize the review",
+      "prompt": "Reconcile the prior findings. Remove duplicates. Rank the required work.",
+      "harness": "omp",
+      "model": "xai-oauth/grok-build",
+      "host": "local",
+      "dependsOn": ["architecture", "correctness", "independent-review"],
+      "isolate": false
+    }
+  ]
+}

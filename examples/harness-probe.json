@@ -1,0 +1,44 @@
+{
+  "name": "harness-probe",
+  "goal": "Verify that Mafia can start each configured external harness.",
+  "maxParallel": 4,
+  "tasks": [
+    {
+      "id": "claude-fable",
+      "prompt": "Reply with CLAUDE_FABLE_READY only. Do not use tools.",
+      "harness": "claude",
+      "model": "fable",
+      "host": "local",
+      "isolate": false,
+      "retries": 0,
+      "timeoutSeconds": 180
+    },
+    {
+      "id": "kimi-code",
+      "prompt": "Reply with KIMI_CODE_READY only. Do not use tools.",
+      "harness": "kimi",
+      "host": "local",
+      "isolate": false,
+      "retries": 0,
+      "timeoutSeconds": 180
+    },
+    {
+      "id": "cline",
+      "prompt": "Reply with CLINE_READY only. Do not use tools.",
+      "harness": "cline",
+      "host": "local",
+      "isolate": false,
+      "retries": 0,
+      "timeoutSeconds": 180
+    },
+    {
+      "id": "opencode",
+      "prompt": "Reply with OPENCODE_READY only. Do not use tools.",
+      "harness": "opencode",
+      "host": "local",
+      "isolate": false,
+      "retries": 0,
+      "timeoutSeconds": 180
+    }
+  ]
+}

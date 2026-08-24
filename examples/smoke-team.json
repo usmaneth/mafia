@@ -1,0 +1,37 @@
+{
+  "name": "mafia-smoke-team",
+  "goal": "Verify parallel local and VPS workers, dependency flow, and result collection.",
+  "maxParallel": 2,
+  "tasks": [
+    {
+      "id": "local-fact",
+      "title": "Local OMP worker",
+      "prompt": "Return this fact exactly: LOCAL_WORKER_READY.",
+      "harness": "omp",
+      "model": "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free",
+      "host": "local",
+      "isolate": false,
+      "retries": 0
+    },
+    {
+      "id": "remote-fact",
+      "title": "Remote Codex worker",
+      "prompt": "Return this fact exactly: VPS_WORKER_READY. Do not use tools.",
+      "harness": "codex",
+      "host": "vps",
+      "isolate": false,
+      "retries": 0
+    },
+    {
+      "id": "synthesis",
+      "title": "OMP team synthesis",
+      "prompt": "Read both dependency results. Return TEAM_PIPELINE_READY if both facts are present.",
+      "harness": "omp",
+      "model": "xai-oauth/grok-build",
+      "host": "local",
+      "isolate": false,
+      "dependsOn": ["local-fact", "remote-fact"],
+      "retries": 0
+    }
+  ]
+}

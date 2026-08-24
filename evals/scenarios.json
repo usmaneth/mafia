@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "scenarios": [
+    {
+      "id": "job-store",
+      "type": "deterministic",
+      "expect": "The SQLite ledger stores and updates a job."
+    },
+    {
+      "id": "result-extraction",
+      "type": "deterministic",
+      "expect": "OMP and Codex JSON streams produce one final result."
+    },
+    {
+      "id": "worktree-isolation",
+      "type": "deterministic",
+      "expect": "A worker edit exists in its worktree and not in the source checkout."
+    },
+    {
+      "id": "large-team",
+      "type": "deterministic",
+      "expect": "The validator accepts 128 tasks and rejects 129 tasks."
+    },
+    {
+      "id": "mixed-host-team",
+      "type": "live",
+      "expect": "Local Nemotron and VPS Codex complete before local Grok Build synthesis."
+    },
+    {
+      "id": "omp-tool",
+      "type": "live",
+      "expect": "The lead OMP model can call mafia_jobs."
+    }
+  ]
+}
