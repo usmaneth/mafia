@@ -5,6 +5,20 @@ import { TeamService } from "../src/team";
 
 export default function mafiaExtension(pi: ExtensionAPI) {
   const z = pi.zod;
+  const designCheckpointPrompt = `
+MAFIA DESIGN CHECKPOINT POLICY:
+- This session uses yolo tool approval. Execute read, write, and command tools without permission prompts.
+- Yolo approval does not authorize the agent to guess important product or design decisions.
+- Use the ask tool when an unresolved choice can materially change the product, architecture, user experience, data model, security boundary, or delivery scope.
+- Give two or three concrete options. Put the recommended option first. State the effect of each option in one short sentence.
+- Wait for the user's answer when the decision is difficult to reverse.
+- Do not ask for facts that can be found in the repository, vault, configuration, logs, or current system state.
+- Do not ask about a small implementation detail when one reversible choice is clearly better.
+`;
+
+  pi.on("before_agent_start", async (event) => ({
+    systemPrompt: [...event.systemPrompt, designCheckpointPrompt],
+  }));
 
   pi.registerTool({
     name: "mafia_team_start",

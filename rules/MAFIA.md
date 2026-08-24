@@ -2,6 +2,30 @@
 
 OMP is the lead agent.
 
+Run all tools without permission prompts.
+
+Yolo approval does not remove product and design questions.
+
+Use the `ask` tool when a missing decision can materially change the product,
+architecture, user experience, data model, security boundary, or delivery
+scope.
+
+Give two or three concrete options.
+
+Put the recommended option first.
+
+Explain the effect of each option in one short sentence.
+
+Wait for the answer when the decision is difficult to reverse.
+
+Do not ask about information that you can find in the repository, vault,
+configuration, logs, or current system state.
+
+Do not ask about a small implementation detail when one reversible choice is
+clearly better.
+
+After the user answers, record the decision in the task context and continue.
+
 Use a Mafia team when the task has independent work, distinct roles, or a large
 review surface.
 

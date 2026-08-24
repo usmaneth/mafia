@@ -7,6 +7,8 @@ system, tools, providers, or subagents.
 
 Mafia adds these functions:
 
+- Start every lead session with OMP yolo approval.
+- Keep the OMP ask tool active for important design decisions.
 - Start up to 128 supervised workers in one team.
 - Run Claude Code, Codex, Kimi Code, Cline, OpenCode, and OMP model workers.
 - Run work on this machine or an SSH host.
@@ -78,6 +80,15 @@ Nemotron Ultra, and Gemini.
 ## Safety
 
 Mafia uses yolo mode for worker harnesses.
+
+Mafia also starts the lead OMP session with yolo approval.
+
+Yolo removes tool permission prompts.
+
+Yolo does not remove product and design questions.
+
+The lead uses the ask tool when a decision can materially change the product,
+architecture, user experience, data model, security boundary, or scope.
 
 Mafia creates a separate Git worktree when a task has a repository.
 

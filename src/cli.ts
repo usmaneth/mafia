@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { ensureConfig, loadConfig, resolveHost } from "./config";
 import { formatJobs, formatTeam, formatTeams } from "./format";
 import { isHarnessName } from "./harnesses";
+import { buildOmpArgs } from "./launch";
 import { installRemote } from "./remote";
 import { MafiaService } from "./service";
 import { TeamService } from "./team";
@@ -62,18 +63,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   if (!command || command === "shell" || command === "run" || !controlCommands.has(command)) {
     const { spawnSync } = await import("node:child_process");
     const extra = command === "shell" || command === "run" ? argv.slice(1) : argv;
-    const result = spawnSync(
-      "omp",
-      [
-        "--profile",
-        "mafia",
-        "--allow-home",
-        "--append-system-prompt",
-        `${process.env.HOME}/mafia/rules/MAFIA.md`,
-        ...extra,
-      ],
-      { stdio: "inherit" },
-    );
+    const result = spawnSync("omp", buildOmpArgs(extra), { stdio: "inherit" });
     process.exitCode = result.status ?? 1;
     return;
   }
