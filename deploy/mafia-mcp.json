@@ -1,0 +1,10 @@
+{
+  "disabledServers": [
+    "higgsfield",
+    "figma:figma",
+    "Notion:notion",
+    "vercel:vercel",
+    "telegram:telegram",
+    "slack:slack"
+  ]
+}

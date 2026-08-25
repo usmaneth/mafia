@@ -12,6 +12,8 @@ import { routeTask } from "./router";
 import { catalogCandidates, filterCatalog, ModelCatalogService } from "./models";
 import { recommendParallelism } from "./scale";
 import { installUpdateAutomation, updateMafia } from "./updater";
+import { readVpsTelemetry, refreshVpsTelemetry } from "./telemetry";
+import { formatVpsTelemetry } from "./format";
 import { teamProtocolNames, type JobState, type MessageType, type PipelineSpec, type TeamProtocolName } from "./types";
 
 function option(args: string[], name: string): string | undefined {
@@ -67,6 +69,7 @@ usage:
   mafia scale --tasks N [--ready N] [--risk low|medium|high]
   mafia update [--push] [--deploy]
   mafia install-updater
+  mafia vps [--refresh] [--all] [--json]
   mafia budget TEAM
   mafia protocol start NAME --goal TEXT [--repo PATH]
   mafia sync [--discover]
@@ -85,6 +88,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     "help", "-h", "--help", "jobs", "status", "watch", "dispatch", "logs", "cancel", "handoff", "compare",
     "team", "hub", "message", "decisions", "decision", "events", "route", "budget", "protocol",
     "sync", "hosts", "install-remote", "eval", "__team-run", "doctor", "models", "scale", "update", "install-updater",
+    "vps", "__vps-refresh",
   ]);
   if (!command || command === "shell" || command === "run" || !controlCommands.has(command)) {
     const { spawnSync } = await import("node:child_process");
@@ -290,6 +294,16 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
       return;
     case "install-updater":
       printJson(installUpdateAutomation());
+      return;
+    case "vps": {
+      const value = has(args, "--refresh")
+        ? refreshVpsTelemetry(true)
+        : readVpsTelemetry() ?? refreshVpsTelemetry(true);
+      has(args, "--json") ? printJson(value) : console.log(formatVpsTelemetry(value, { allProcesses: has(args, "--all") }));
+      return;
+    }
+    case "__vps-refresh":
+      refreshVpsTelemetry(has(args, "--force"));
       return;
     case "budget": {
       const team = teams.get(required(args[0], "The team ID is required."));

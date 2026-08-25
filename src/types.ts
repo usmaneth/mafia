@@ -293,6 +293,58 @@ export interface ScaleDecision {
   reasons: string[];
 }
 
+export interface VpsProcess {
+  pid: number;
+  user: string;
+  state: string;
+  ageSeconds: number;
+  cpuPercent: number;
+  memoryPercent: number;
+  command: string;
+}
+
+export interface VpsUnit {
+  name: string;
+  active: string;
+  sub: string;
+  description: string;
+}
+
+export interface VpsTimer {
+  name: string;
+  next?: string;
+  last?: string;
+  activates?: string;
+}
+
+export interface VpsTelemetry {
+  generatedAt: string;
+  host: string;
+  reachable: boolean;
+  latencyMs: number;
+  error?: string;
+  uptimeSeconds?: number;
+  load?: [number, number, number];
+  memory?: { usedBytes: number; totalBytes: number; swapUsedBytes: number; swapTotalBytes: number };
+  disk?: { usedBytes: number; totalBytes: number; percent: number };
+  jobs: {
+    total: number;
+    running: number;
+    failed: number;
+    lost: number;
+    byHarness: Record<string, number>;
+  };
+  models: {
+    total: number;
+    generatedAt?: string;
+    sources: Array<{ harness: string; status: string; count: number; error?: string }>;
+    fallbackOrder: HarnessName[];
+  };
+  units: VpsUnit[];
+  timers: VpsTimer[];
+  processes: VpsProcess[];
+}
+
 export interface RoutingConfig {
   candidates: RoutingCandidate[];
   fallbackOrder?: HarnessName[];

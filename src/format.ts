@@ -1,5 +1,5 @@
 import { budgetState } from "./budget";
-import type { JobStatus, MafiaMessage, TeamStatus } from "./types";
+import type { JobStatus, MafiaMessage, TeamStatus, VpsTelemetry } from "./types";
 
 function age(value: string): string {
   const seconds = Math.max(0, Math.floor((Date.now() - new Date(value).getTime()) / 1000));
@@ -91,6 +91,59 @@ export function formatHub(team: TeamStatus, jobs: JobStatus[], messages: MafiaMe
   }
   if (messages.length) {
     lines.push("", "Recent messages:", ...formatMessages(messages.slice(0, 8)).split("\n"));
+  }
+  return lines.join("\n");
+}
+
+function bytes(value: number): string {
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let size = value;
+  let index = 0;
+  while (size >= 1024 && index < units.length - 1) {
+    size /= 1024;
+    index++;
+  }
+  return `${size.toFixed(index > 2 ? 1 : 0)}${units[index]}`;
+}
+
+function telemetryAge(value: string): string {
+  return age(value);
+}
+
+export function formatVpsTelemetry(value: VpsTelemetry, options: { compact?: boolean; allProcesses?: boolean } = {}): string {
+  if (!value.reachable) {
+    return `VPS - offline - ${value.error ?? "SSH failed"} - checked ${telemetryAge(value.generatedAt)} ago`;
+  }
+  const memory = value.memory
+    ? `${bytes(value.memory.usedBytes)}/${bytes(value.memory.totalBytes)}`
+    : "-";
+  const swap = value.memory
+    ? `${bytes(value.memory.swapUsedBytes)}/${bytes(value.memory.swapTotalBytes)}`
+    : "-";
+  const disk = value.disk ? `${value.disk.percent}%` : "-";
+  const load = value.load?.map((item) => item.toFixed(2)).join("/") ?? "-";
+  const unhealthy = value.units.filter((unit) => unit.active === "failed" || unit.sub === "failed");
+  const providerErrors = value.models.sources.filter((source) => source.status !== "ok");
+  const processFilter = /(mafia|omp|claude|codex|kimi|cline|opencode|hermes|herdr|vault|watch|agent|proxy)/i;
+  const processes = (options.allProcesses
+    ? value.processes
+    : value.processes.filter((process) => processFilter.test(process.command)).slice(0, options.compact ? 4 : 20));
+  const lines = [
+    `VPS ${value.host} - online ${value.latencyMs}ms - snapshot ${telemetryAge(value.generatedAt)} ago`,
+    `load ${load} - memory ${memory} - swap ${swap} - disk ${disk}`,
+    `workers ${value.jobs.running} active / ${value.jobs.failed} failed / ${value.jobs.lost} lost - ${value.jobs.total} total`,
+    `models ${value.models.total} - fallback ${value.models.fallbackOrder.join(" > ")}`,
+    `providers ${value.models.sources.map((source) => `${source.harness}:${source.status}:${source.count}`).join(" ") || "-"}`,
+    `watchers ${value.units.map((unit) => `${unit.name.replace(/\.(service|timer)$/, "")}:${unit.active}`).join(" ")}`,
+    `timers ${value.timers.map((timer) => `${timer.name.replace(".timer", "")}:${timer.next ?? "unknown"}`).join(" ")}`,
+  ];
+  if (unhealthy.length) lines.push(`alerts ${unhealthy.map((unit) => `${unit.name}:${unit.sub}`).join(" ")}`);
+  if (providerErrors.length) lines.push(`model alerts ${providerErrors.map((source) => `${source.harness}:${source.error ?? source.status}`).join(" ")}`);
+  if (processes.length) {
+    lines.push("processes:");
+    for (const process of processes) {
+      lines.push(`${String(process.pid).padStart(7)} ${process.user.padEnd(8)} ${process.cpuPercent.toFixed(1).padStart(5)}% ${process.memoryPercent.toFixed(1).padStart(4)}% ${process.command.slice(0, options.compact ? 68 : 140)}`);
+    }
   }
   return lines.join("\n");
 }

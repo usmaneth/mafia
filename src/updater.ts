@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { homedir, platform } from "node:os";
 import { spawnSync } from "node:child_process";
@@ -12,9 +12,41 @@ interface UpdateResult {
   detail: string;
 }
 
+const disabledMcpServers = [
+  "higgsfield",
+  "figma:figma",
+  "Notion:notion",
+  "vercel:vercel",
+  "telegram:telegram",
+  "slack:slack",
+];
+
 function exec(command: string, args: string[], cwd = repoRoot): { ok: boolean; output: string } {
   const result = spawnSync(command, args, { cwd, encoding: "utf8", timeout: 180_000 });
   return { ok: result.status === 0, output: (result.stdout || result.stderr || "").trim() };
+}
+
+function optimizeMafiaProfile(): UpdateResult {
+  const config = exec("omp", ["--profile", "mafia", "config", "path"]);
+  if (!config.ok || !config.output) {
+    return { target: "omp-performance", status: "error", detail: config.output || "Cannot find the Mafia profile." };
+  }
+  const path = join(config.output, "mcp.json");
+  let input: Record<string, unknown> = {};
+  try {
+    input = JSON.parse(readFileSync(path, "utf8"));
+  } catch {}
+  const current = Array.isArray(input.disabledServers) ? input.disabledServers.filter((item): item is string => typeof item === "string") : [];
+  const value = { ...input, disabledServers: [...new Set([...current, ...disabledMcpServers])] };
+  mkdirSync(config.output, { recursive: true });
+  const temp = `${path}.${process.pid}.tmp`;
+  writeFileSync(temp, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
+  renameSync(temp, path);
+  return {
+    target: "omp-performance",
+    status: "ok",
+    detail: `Disabled ${disabledMcpServers.length} unauthenticated Mafia-only MCP connections.`,
+  };
 }
 
 export function updateMafia(options: { push?: boolean; deploy?: boolean } = {}): UpdateResult[] {
@@ -43,6 +75,7 @@ export function updateMafia(options: { push?: boolean; deploy?: boolean } = {}):
       status: ompScope.ok ? "ok" : "error",
       detail: ompScope.output || "The TUI uses every available authenticated model.",
     });
+    results.push(optimizeMafiaProfile());
   } catch (error) {
     results.push({ target: "model-catalog", status: "error", detail: error instanceof Error ? error.message : String(error) });
   }

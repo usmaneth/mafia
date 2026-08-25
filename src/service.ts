@@ -170,6 +170,22 @@ export class MafiaService {
     return this.store.list(limit, state);
   }
 
+  listCached(limit = 50, state?: JobState): JobStatus[] {
+    return this.store.list(limit, state);
+  }
+
+  reconcileLocal(): JobStatus[] {
+    for (const job of this.store.list(500).filter((item) =>
+      item.host === "local" && ["queued", "starting", "running"].includes(item.state)
+    )) {
+      const current = this.store.importLocalStatus(job.id);
+      const checked = this.markStale(current ?? job);
+      this.store.upsert(checked);
+      this.store.upsertUsage(checked);
+    }
+    return this.store.list(500);
+  }
+
   logs(id: string, lines = 100): string {
     const job = this.get(id);
     const host = resolveHost(this.config, job.host);
