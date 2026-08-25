@@ -82,7 +82,7 @@ export function installUpdateAutomation(): UpdateResult[] {
     results.push({ target: "local-timer", status: load.ok ? "ok" : "error", detail: path });
   }
   for (const host of Object.values(loadConfig().hosts).filter((host) => host.kind === "ssh")) {
-    const service = `[Unit]\nDescription=Refresh Mafia and its model catalog\n[Service]\nType=oneshot\nUser=usman\nWorkingDirectory=/home/usman/mafia\nExecStart=/home/usman/.bun/bin/bun /home/usman/mafia/src/cli.ts update\n`;
+    const service = `[Unit]\nDescription=Refresh Mafia and its model catalog\n[Service]\nType=oneshot\nUser=usman\nEnvironment=HOME=/home/usman\nEnvironment=PATH=/home/usman/.local/bin:/home/usman/.bun/bin:/usr/local/bin:/usr/bin:/bin\nWorkingDirectory=/home/usman/mafia\nExecStart=/home/usman/.bun/bin/bun /home/usman/mafia/src/cli.ts update\n`;
     const timer = `[Unit]\nDescription=Refresh Mafia every 30 minutes\n[Timer]\nOnBootSec=5m\nOnUnitActiveSec=30m\nPersistent=true\n[Install]\nWantedBy=timers.target\n`;
     const encodedService = Buffer.from(service).toString("base64");
     const encodedTimer = Buffer.from(timer).toString("base64");
