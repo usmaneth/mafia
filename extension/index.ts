@@ -562,10 +562,7 @@ MAFIA DESIGN CHECKPOINT POLICY:
 
   pi.on("session_start", async (_event, ctx) => {
     const mafia = new MafiaService();
-    const teamService = new TeamService();
     let collectorRunning = false;
-    let lastStatus = "";
-    let lastHub = "";
     let lastVps = "";
     const collectVps = () => {
       if (collectorRunning) return;
@@ -583,40 +580,11 @@ MAFIA DESIGN CHECKPOINT POLICY:
     };
     const refresh = () => {
       try {
-        const active = mafia.reconcileLocal().filter((job) => ["queued", "starting", "running"].includes(job.state));
-        const teams = teamService.list(10);
-        const status = active.length ? `Mafia ${active.length} active` : "Mafia idle";
-        if (status !== lastStatus) {
-          ctx.ui.setStatus("mafia", status);
-          lastStatus = status;
-        }
-        const team = teams.find((item) => item.state === "running");
-        if (team) {
-          const jobs = mafia.listCached(500);
-          const lines = formatHub(team, jobs, mafia.control.messages({ teamId: team.id, limit: 5 }))
-            .split("\n")
-            .slice(0, 14);
-          const hub = lines.join("\n");
-          if (hub !== lastHub) {
-            ctx.ui.setWidget("mafia-hub", lines);
-            lastHub = hub;
-          }
-        } else if (lastHub) {
-          ctx.ui.setWidget("mafia-hub", undefined);
-          lastHub = "";
-        }
         const telemetry = readVpsTelemetry(mafia.config.stateRoot);
-        if (telemetry) {
-          const lines = formatVpsWidget(telemetry);
-          const vps = lines.join("\n");
-          if (vps !== lastVps) {
-            ctx.ui.setWidget("mafia-vps", lines);
-            lastVps = vps;
-          }
-        } else if (!lastVps) {
-          const message = "VPS - telemetry starts in the background";
-          ctx.ui.setWidget("mafia-vps", [message]);
-          lastVps = message;
+        const vps = telemetry ? formatVpsWidget(telemetry)[0] : "VPS checking";
+        if (vps !== lastVps) {
+          ctx.ui.setStatus("mafia-vps", vps);
+          lastVps = vps;
         }
       } catch {}
     };

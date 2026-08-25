@@ -73,7 +73,7 @@ describe("VPS telemetry", () => {
     expect(formatVpsTelemetry({ ...telemetry, reachable: false, error: "timeout" })).toContain("offline - timeout");
   });
 
-  test("formats a stable compact widget", async () => {
+  test("formats one stable VPS health line", async () => {
     const widgetTelemetry = {
       ...telemetry,
       units: [
@@ -93,11 +93,12 @@ describe("VPS telemetry", () => {
     const second = formatVpsWidget(widgetTelemetry);
 
     expect(first).toEqual(second);
-    expect(first.length).toBeLessThanOrEqual(6);
+    expect(first).toHaveLength(1);
     expect(Math.max(...first.map((line) => line.length))).toBeLessThanOrEqual(80);
-    expect(first.join("\n")).toContain("claude:?");
-    expect(first.join("\n")).toContain("watch update:ok");
-    expect(first.join("\n")).not.toContain("update:off");
+    expect(first[0]).toContain("VPS vps-test online 42ms");
+    expect(first[0]).toContain("load 1.00 | mem 50% | disk 70%");
+    expect(first[0]).not.toContain("route");
+    expect(first[0]).not.toContain("watch");
   });
 
   test("formats the full operations dashboard", () => {

@@ -115,32 +115,6 @@ function percent(used: number, total: number): string {
   return `${Math.round((used / total) * 100)}%`;
 }
 
-function shortUnitName(value: string): string {
-  return value
-    .replace(/\.(service|timer)$/, "")
-    .replace("mafia-update", "update")
-    .replace("provider-auth-monitor", "auth")
-    .replace("pr-watch", "PR")
-    .replace("vault-daemon", "vault");
-}
-
-function shortUnitState(value: string): string {
-  if (value === "active") return "ok";
-  if (value === "inactive") return "off";
-  return value;
-}
-
-function shortTimer(value?: string): string {
-  if (!value) return "-";
-  const timestamp = new Date(value).getTime();
-  if (!Number.isFinite(timestamp)) return value.slice(0, 12);
-  const seconds = Math.floor((timestamp - Date.now()) / 1000);
-  if (seconds <= 0) return "due";
-  if (seconds < 60) return "<1m";
-  if (seconds < 3600) return `${Math.ceil(seconds / 60)}m`;
-  return `${Math.ceil(seconds / 3600)}h`;
-}
-
 export function formatVpsWidget(value: VpsTelemetry): string[] {
   if (!value.reachable) {
     return [`VPS offline | ${value.error ?? "SSH failed"}`];
@@ -150,32 +124,7 @@ export function formatVpsWidget(value: VpsTelemetry): string[] {
   const disk = value.disk ? `${value.disk.percent}%` : "-";
   const load = value.load?.[0].toFixed(2) ?? "-";
   const stale = Date.now() - new Date(value.generatedAt).getTime() >= 60_000 ? " | stale" : "";
-  const fallback = value.models.fallbackOrder.map((harness) => {
-    const source = value.models.sources.find((item) => item.harness === harness);
-    if (!source) return `${harness}:?`;
-    if (source.status !== "ok") return `${harness}:FAIL`;
-    return `${harness}:${source.count > 0 ? "ok" : "EMPTY"}`;
-  });
-  const timers = value.timers
-    .map((timer) => `${shortUnitName(timer.name)}:${shortTimer(timer.next)}`)
-    .join(" ");
-  const processFilter = /(mafia|omp|claude|codex|kimi|cline|opencode|hermes|herdr|vault|watch|agent|proxy)/i;
-  const relevantProcesses = value.processes.filter((process) => processFilter.test(process.command)).length;
-  const latestProblem = value.jobs.recent.find((job) => job.state === "failed" || job.state === "lost");
-  const widgetUnits = value.units.filter((unit) =>
-    !["mafia-update.service", "provider-auth-monitor.service"].includes(unit.name));
-  const lines = [
-    `VPS ${value.host} online ${value.latencyMs}ms | load ${load} | mem ${memory} | disk ${disk}${stale}`,
-    `workers ${value.jobs.running} run ${value.jobs.failed} fail ${value.jobs.lost} lost | models ${value.models.total}`,
-    `route ${fallback.join(" ") || "-"}`,
-    `watch ${widgetUnits.map((unit) => `${shortUnitName(unit.name)}:${shortUnitState(unit.active)}`).join(" ") || "-"}`,
-    `timers ${timers || "-"} | relevant processes ${relevantProcesses}`,
-  ];
-  if (latestProblem) {
-    const detail = latestProblem.error ?? latestProblem.title;
-    lines.push(`last ${latestProblem.state} ${latestProblem.harness} | ${detail.slice(0, 48)}`);
-  }
-  return lines;
+  return [`VPS ${value.host} online ${value.latencyMs}ms | load ${load} | mem ${memory} | disk ${disk}${stale}`];
 }
 
 function duration(seconds?: number): string {
