@@ -14,6 +14,7 @@ import { recommendParallelism } from "./scale";
 import { installUpdateAutomation, updateMafia } from "./updater";
 import { readVpsTelemetry, refreshVpsTelemetry } from "./telemetry";
 import { formatVpsTelemetry } from "./format";
+import { codexOAuthEnvironment } from "./process";
 import { teamProtocolNames, type JobState, type MessageType, type PipelineSpec, type TeamProtocolName } from "./types";
 
 function option(args: string[], name: string): string | undefined {
@@ -93,7 +94,10 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   if (!command || command === "shell" || command === "run" || !controlCommands.has(command)) {
     const { spawnSync } = await import("node:child_process");
     const extra = command === "shell" || command === "run" ? argv.slice(1) : argv;
-    const result = spawnSync("omp", buildOmpArgs(extra), { stdio: "inherit" });
+    const result = spawnSync("omp", buildOmpArgs(extra), {
+      env: codexOAuthEnvironment(),
+      stdio: "inherit",
+    });
     process.exitCode = result.status ?? 1;
     return;
   }

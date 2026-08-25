@@ -1,5 +1,12 @@
 import { spawn, spawnSync } from "node:child_process";
 
+export function codexOAuthEnvironment(source: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const environment = { ...source };
+  delete environment.OPENAI_API_KEY;
+  delete environment.CODEX_API_KEY;
+  return environment;
+}
+
 export function run(command: string, args: string[], options: { cwd?: string; input?: string } = {}) {
   const result = spawnSync(command, args, {
     cwd: options.cwd,
@@ -13,9 +20,15 @@ export function run(command: string, args: string[], options: { cwd?: string; in
   return result.stdout.trim();
 }
 
-export function spawnDetached(command: string, args: string[], cwd?: string): number {
+export function spawnDetached(
+  command: string,
+  args: string[],
+  cwd?: string,
+  environment: NodeJS.ProcessEnv = process.env,
+): number {
   const child = spawn(command, args, {
     cwd,
+    env: environment,
     detached: true,
     stdio: "ignore",
   });

@@ -4,7 +4,7 @@ import { execFileSync } from "node:child_process";
 import { loadConfig, resolveHost, repoRoot } from "./config";
 import { createId } from "./id";
 import { isHarnessName } from "./harnesses";
-import { spawnDetached } from "./process";
+import { codexOAuthEnvironment, spawnDetached } from "./process";
 import {
   appendRemoteControl,
   appendRemoteMessage,
@@ -103,7 +103,12 @@ export class MafiaService {
 
     let pid: number;
     if (host.kind === "local") {
-      pid = spawnDetached("node", [join(repoRoot, "worker", "worker.mjs"), join(localJobDir, "spec.json")]);
+      pid = spawnDetached(
+        "node",
+        [join(repoRoot, "worker", "worker.mjs"), join(localJobDir, "spec.json")],
+        undefined,
+        codexOAuthEnvironment(),
+      );
     } else {
       pid = dispatchRemote(host, spec);
     }

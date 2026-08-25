@@ -21,6 +21,14 @@ const disabledMcpServers = [
   "slack:slack",
 ];
 
+export function codexOAuthModelRoles(input: Record<string, unknown>): Record<string, unknown> {
+  return {
+    ...input,
+    smol: "openai-codex/gpt-5.4-mini",
+    advisor: "openai-codex/gpt-5.6-sol",
+  };
+}
+
 function exec(command: string, args: string[], cwd = repoRoot): { ok: boolean; output: string } {
   const result = spawnSync(command, args, { cwd, encoding: "utf8", timeout: 180_000 });
   return { ok: result.status === 0, output: (result.stdout || result.stderr || "").trim() };
@@ -47,6 +55,38 @@ function optimizeMafiaProfile(): UpdateResult {
     status: "ok",
     detail: `Disabled ${disabledMcpServers.length} unauthenticated Mafia-only MCP connections.`,
   };
+}
+
+function configureCodexOAuthRoles(): UpdateResult {
+  const current = exec("omp", ["--profile", "mafia", "config", "get", "modelRoles", "--json"]);
+  if (!current.ok || !current.output) {
+    return { target: "codex-oauth-routing", status: "error", detail: current.output || "Cannot read the model roles." };
+  }
+  try {
+    const response = JSON.parse(current.output) as { value?: Record<string, unknown> };
+    const roles = codexOAuthModelRoles(response.value ?? {});
+    const update = exec("omp", [
+      "--profile",
+      "mafia",
+      "config",
+      "set",
+      "modelRoles",
+      JSON.stringify(roles),
+    ]);
+    return {
+      target: "codex-oauth-routing",
+      status: update.ok ? "ok" : "error",
+      detail: update.ok
+        ? "Mafia Codex roles use ChatGPT OAuth only."
+        : update.output || "Cannot update the model roles.",
+    };
+  } catch (error) {
+    return {
+      target: "codex-oauth-routing",
+      status: "error",
+      detail: error instanceof Error ? error.message : String(error),
+    };
+  }
 }
 
 export function updateMafia(options: { push?: boolean; deploy?: boolean } = {}): UpdateResult[] {
@@ -76,6 +116,7 @@ export function updateMafia(options: { push?: boolean; deploy?: boolean } = {}):
       detail: ompScope.output || "The TUI uses every available authenticated model.",
     });
     results.push(optimizeMafiaProfile());
+    results.push(configureCodexOAuthRoles());
   } catch (error) {
     results.push({ target: "model-catalog", status: "error", detail: error instanceof Error ? error.message : String(error) });
   }

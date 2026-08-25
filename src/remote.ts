@@ -35,7 +35,7 @@ export function dispatchRemote(host: HostConfig, spec: JobSpec): number {
   const user = host.harnessUsers?.[spec.harness] ?? host.defaultUser;
   if (user) run("ssh", [host.target, `chown -R ${shellQuote(user)} ${shellQuote(remoteDir)}`]);
   const inner = [
-    `nohup node ${shellQuote(host.workerPath)} ${shellQuote(remoteSpec)}`,
+    `nohup env -u OPENAI_API_KEY -u CODEX_API_KEY node ${shellQuote(host.workerPath)} ${shellQuote(remoteSpec)}`,
     `> ${shellQuote(join(remoteDir, "launcher.log"))} 2>&1 < /dev/null & echo $!`,
   ].join(" ");
   const command = user ? `sudo -iu ${shellQuote(user)} bash -lc ${shellQuote(inner)}` : inner;
