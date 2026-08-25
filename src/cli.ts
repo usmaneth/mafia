@@ -41,6 +41,7 @@ usage:
   mafia logs JOB [--lines N]
   mafia cancel JOB
   mafia handoff JOB --harness NAME [--host NAME] [--prompt TEXT]
+  mafia compare LEFT_JOB RIGHT_JOB
   mafia team start --file TEAM.json
   mafia team list [--json]
   mafia team status TEAM [--json]
@@ -74,7 +75,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   ensureConfig();
   const command = argv[0];
   const controlCommands = new Set([
-    "help", "-h", "--help", "jobs", "status", "watch", "dispatch", "logs", "cancel", "handoff",
+    "help", "-h", "--help", "jobs", "status", "watch", "dispatch", "logs", "cancel", "handoff", "compare",
     "team", "hub", "message", "decisions", "decision", "events", "route", "budget", "protocol",
     "sync", "hosts", "install-remote", "eval", "__team-run", "doctor",
   ]);
@@ -148,6 +149,12 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
       has(args, "--json") ? printJson(job) : console.log(`${job.id} ${job.harness}@${job.host} ${job.state}`);
       return;
     }
+    case "compare":
+      console.log(mafia.compare(
+        required(args[0], "The left job ID is required."),
+        required(args[1], "The right job ID is required."),
+      ));
+      return;
     case "team": {
       const action = args[0];
       if (action === "start") {

@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { execFileSync } from "node:child_process";
 import { loadConfig, resolveHost, repoRoot } from "./config";
 import { createId } from "./id";
 import { isHarnessName } from "./harnesses";
@@ -11,6 +12,7 @@ import {
   dispatchRemote,
   discoverRemote,
   discoverRemoteEvents,
+  compareRemoteBranches,
   readRemoteLog,
   readRemoteStatus,
 } from "./remote";
@@ -235,6 +237,33 @@ export class MafiaService {
       parentId: parent.id,
       labels: [...parent.labels, "handoff"],
     });
+  }
+
+  compare(leftId: string, rightId: string): string {
+    const left = this.get(leftId);
+    const right = this.get(rightId);
+    if (left.host !== right.host) {
+      return [
+        "The jobs use different hosts.",
+        `${left.id}: ${left.host} ${left.branch ?? "-"}`,
+        `${right.id}: ${right.host} ${right.branch ?? "-"}`,
+        "Move or fetch one branch before a content diff.",
+      ].join("\n");
+    }
+    if (!left.branch || !right.branch || !left.worktree) {
+      throw new Error("Both jobs must have isolated Git branches.");
+    }
+    const host = resolveHost(this.config, left.host);
+    if (host.kind === "ssh") return compareRemoteBranches(host, left.worktree, left.branch, right.branch);
+    const stat = execFileSync("git", ["diff", "--stat", `${left.branch}...${right.branch}`], {
+      cwd: left.worktree,
+      encoding: "utf8",
+    });
+    const names = execFileSync("git", ["diff", "--name-status", `${left.branch}...${right.branch}`], {
+      cwd: left.worktree,
+      encoding: "utf8",
+    });
+    return `${stat}\n${names}`.trim();
   }
 
   private markStale(job: JobStatus): JobStatus {

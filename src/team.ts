@@ -17,6 +17,8 @@ import type {
   TeamTaskStatus,
 } from "./types";
 import { repoRoot } from "./config";
+import { resetRemoteWorktree } from "./remote";
+import { resolveHost } from "./config";
 
 const terminalStates = new Set(["succeeded", "failed", "blocked", "cancelled"]);
 
@@ -399,7 +401,12 @@ export class TeamService {
     for (const branch of checkpoint.branches) {
       if (!branch.sha || !branch.worktree) continue;
       const job = branch.jobId ? this.mafia.store.get(branch.jobId) : undefined;
-      if (job?.host && job.host !== "local") continue;
+      if (job?.host && job.host !== "local") {
+        try {
+          resetRemoteWorktree(resolveHost(this.mafia.config, job.host), branch.worktree, branch.sha);
+        } catch {}
+        continue;
+      }
       if (!existsSync(branch.worktree)) continue;
       try {
         execFileSync("git", ["reset", "--hard", branch.sha], { cwd: branch.worktree, stdio: "ignore" });

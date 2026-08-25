@@ -329,6 +329,21 @@ MAFIA DESIGN CHECKPOINT POLICY:
   });
 
   pi.registerTool({
+    name: "mafia_compare",
+    label: "Compare Mafia Branches",
+    description: "Compare two Mafia worker branches on the same host.",
+    parameters: z.object({
+      leftJobId: z.string(),
+      rightJobId: z.string(),
+    }),
+    async execute(_toolCallId, rawParams) {
+      const params = rawParams as any;
+      const text = new MafiaService().compare(params.leftJobId, params.rightJobId);
+      return { content: [{ type: "text", text }], details: params };
+    },
+  });
+
+  pi.registerTool({
     name: "mafia_cancel",
     label: "Cancel Mafia Work",
     description: "Cancel one Mafia job or one complete Mafia team.",

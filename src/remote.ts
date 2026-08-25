@@ -82,6 +82,29 @@ export function discoverRemoteEvents(host: HostConfig): { events: MafiaEvent[]; 
   };
 }
 
+export function resetRemoteWorktree(host: HostConfig, path: string, sha: string): void {
+  if (host.kind !== "ssh" || !host.target) throw new Error("The host is not remote.");
+  const inner = `git -C ${shellQuote(path)} reset --hard ${shellQuote(sha)} && git -C ${shellQuote(path)} clean -fd`;
+  const command = host.defaultUser
+    ? `sudo -iu ${shellQuote(host.defaultUser)} bash -lc ${shellQuote(inner)}`
+    : inner;
+  run("ssh", [host.target, command]);
+}
+
+export function compareRemoteBranches(
+  host: HostConfig,
+  worktree: string,
+  left: string,
+  right: string,
+): string {
+  if (host.kind !== "ssh" || !host.target) throw new Error("The host is not remote.");
+  return run("ssh", [
+    host.target,
+    `git -C ${shellQuote(worktree)} diff --stat ${shellQuote(left)}...${shellQuote(right)} && ` +
+      `git -C ${shellQuote(worktree)} diff --name-status ${shellQuote(left)}...${shellQuote(right)}`,
+  ]);
+}
+
 export function readRemoteStatus(host: HostConfig, id: string): JobStatus | undefined {
   if (host.kind !== "ssh" || !host.target) return undefined;
   try {

@@ -36,6 +36,7 @@ mafia team update TEAM_ID TASK_ID --file patch.json
 mafia team retry TEAM_ID TASK_ID --file replacement.json
 mafia team checkpoint TEAM_ID --name before-migration
 mafia team restore CHECKPOINT_ID
+mafia compare LEFT_JOB_ID RIGHT_JOB_ID
 ```
 
 The OMP lead has equivalent native tools.
@@ -103,7 +104,7 @@ Mafia creates a checkpoint before each new wave.
 
 The checkpoint records the graph, decisions, branches, worktrees, and Git SHAs.
 
-Mafia resets local isolated worktrees when it restores a checkpoint.
+Mafia resets local and VPS isolated worktrees when it restores a checkpoint.
 
 ## VPS
 
