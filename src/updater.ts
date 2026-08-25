@@ -21,6 +21,7 @@ export function updateMafia(options: { push?: boolean; deploy?: boolean } = {}):
   const results: UpdateResult[] = [];
   const remote = exec("git", ["remote"]);
   const dirty = exec("git", ["status", "--porcelain"]);
+  const clean = dirty.ok && !dirty.output;
   if (!remote.output) {
     results.push({ target: "github", status: "skipped", detail: "No Git remote is configured." });
   } else if (dirty.output) {
@@ -39,7 +40,9 @@ export function updateMafia(options: { push?: boolean; deploy?: boolean } = {}):
   } catch (error) {
     results.push({ target: "model-catalog", status: "error", detail: error instanceof Error ? error.message : String(error) });
   }
-  if (options.deploy) {
+  if (options.deploy && !clean) {
+    results.push({ target: "vps", status: "skipped", detail: "The local worktree has changes. Commit them before deployment." });
+  } else if (options.deploy) {
     for (const host of Object.values(loadConfig().hosts).filter((host) => host.kind === "ssh")) {
       try {
         installRemote(host);
