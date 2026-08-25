@@ -46,13 +46,12 @@ function units(): VpsUnit[] {
 function timers(): VpsTimer[] {
   const names = ["mafia-update.timer", "provider-auth-monitor.timer"];
   return names.map((name) => {
-    const raw = command("systemctl", [
-      "show", name, "--property=NextElapseUSecRealtime,LastTriggerUSec,Unit",
-    ]);
-    const fields = Object.fromEntries(raw.split("\n").map((line) => line.split("=", 2)));
+    const fieldsRaw = command("systemctl", ["show", name, "--property=LastTriggerUSec,Unit"]);
+    const fields = Object.fromEntries(fieldsRaw.split("\n").map((line) => line.split("=", 2)));
+    const row = command("systemctl", ["list-timers", "--all", "--no-legend", "--no-pager", name]).split(/\s+/);
     return {
       name,
-      next: fields.NextElapseUSecRealtime || undefined,
+      next: row.length >= 5 ? `${row[1]} ${row[2]} ${row[3]} (${row[4]})` : undefined,
       last: fields.LastTriggerUSec || undefined,
       activates: fields.Unit || undefined,
     };
@@ -120,6 +119,15 @@ function main(): void {
       failed: allJobs.filter((job) => job.state === "failed").length,
       lost: allJobs.filter((job) => job.state === "lost").length,
       byHarness,
+      recent: [...allJobs].sort((left, right) => right.updatedAt.localeCompare(left.updatedAt)).slice(0, 12).map((job) => ({
+        id: job.id,
+        title: job.title,
+        state: job.state,
+        harness: job.harness,
+        model: job.model,
+        updatedAt: job.updatedAt,
+        error: job.error,
+      })),
     },
     models: {
       total: catalog?.models.length ?? 0,

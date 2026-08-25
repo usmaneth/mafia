@@ -317,6 +317,16 @@ export interface VpsTimer {
   activates?: string;
 }
 
+export interface VpsJobSummary {
+  id: string;
+  title: string;
+  state: JobState;
+  harness: HarnessName;
+  model?: string;
+  updatedAt: string;
+  error?: string;
+}
+
 export interface VpsTelemetry {
   generatedAt: string;
   host: string;
@@ -333,6 +343,7 @@ export interface VpsTelemetry {
     failed: number;
     lost: number;
     byHarness: Record<string, number>;
+    recent: VpsJobSummary[];
   };
   models: {
     total: number;

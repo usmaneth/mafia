@@ -42,7 +42,7 @@ export function refreshVpsTelemetry(force = false): VpsTelemetry {
       reachable: false,
       latencyMs: Math.round(performance.now() - started),
       error: (result.stderr || `SSH exited ${result.status}`).trim(),
-      jobs: { total: 0, running: 0, failed: 0, lost: 0, byHarness: {} },
+      jobs: { total: 0, running: 0, failed: 0, lost: 0, byHarness: {}, recent: [] },
       models: { total: 0, sources: [], fallbackOrder: config.routing?.fallbackOrder ?? [] },
       units: [],
       timers: [],

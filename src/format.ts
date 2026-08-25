@@ -124,6 +124,12 @@ export function formatVpsTelemetry(value: VpsTelemetry, options: { compact?: boo
   const load = value.load?.map((item) => item.toFixed(2)).join("/") ?? "-";
   const unhealthy = value.units.filter((unit) => unit.active === "failed" || unit.sub === "failed");
   const providerErrors = value.models.sources.filter((source) => source.status !== "ok");
+  const fallbackHealth = value.models.fallbackOrder.map((harness) => {
+    const source = value.models.sources.find((item) => item.harness === harness);
+    if (!source) return `${harness}:unknown`;
+    if (source.status !== "ok") return `${harness}:failed`;
+    return `${harness}:${source.count > 0 ? "ready" : "empty"}`;
+  });
   const processFilter = /(mafia|omp|claude|codex|kimi|cline|opencode|hermes|herdr|vault|watch|agent|proxy)/i;
   const processes = (options.allProcesses
     ? value.processes
@@ -133,12 +139,20 @@ export function formatVpsTelemetry(value: VpsTelemetry, options: { compact?: boo
     `load ${load} - memory ${memory} - swap ${swap} - disk ${disk}`,
     `workers ${value.jobs.running} active / ${value.jobs.failed} failed / ${value.jobs.lost} lost - ${value.jobs.total} total`,
     `models ${value.models.total} - fallback ${value.models.fallbackOrder.join(" > ")}`,
+    `fallback health ${fallbackHealth.join(" ")}`,
     `providers ${value.models.sources.map((source) => `${source.harness}:${source.status}:${source.count}`).join(" ") || "-"}`,
     `watchers ${value.units.map((unit) => `${unit.name.replace(/\.(service|timer)$/, "")}:${unit.active}`).join(" ")}`,
     `timers ${value.timers.map((timer) => `${timer.name.replace(".timer", "")}:${timer.next ?? "unknown"}`).join(" ")}`,
   ];
   if (unhealthy.length) lines.push(`alerts ${unhealthy.map((unit) => `${unit.name}:${unit.sub}`).join(" ")}`);
   if (providerErrors.length) lines.push(`model alerts ${providerErrors.map((source) => `${source.harness}:${source.error ?? source.status}`).join(" ")}`);
+  const recentJobs = value.jobs.recent?.slice(0, options.compact ? 3 : 12) ?? [];
+  if (recentJobs.length) {
+    lines.push("VPS jobs:");
+    for (const job of recentJobs) {
+      lines.push(`${job.state.padEnd(9)} ${job.harness}/${job.model ?? "default"} ${job.title.slice(0, options.compact ? 62 : 110)}${job.error ? ` - ${job.error}` : ""}`);
+    }
+  }
   if (processes.length) {
     lines.push("processes:");
     for (const process of processes) {
