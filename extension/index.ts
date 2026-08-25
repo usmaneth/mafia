@@ -1,7 +1,7 @@
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
 import { spawn } from "node:child_process";
 import { join } from "node:path";
-import { formatHub, formatJobs, formatMessages, formatTeam, formatTeams, formatVpsTelemetry } from "../src/format";
+import { formatHub, formatJobs, formatMessages, formatTeam, formatTeams, formatVpsTelemetry, formatVpsWidget } from "../src/format";
 import { protocolSpec } from "../src/protocols";
 import { routeTask } from "../src/router";
 import { loadConfig, repoRoot } from "../src/config";
@@ -548,7 +548,7 @@ MAFIA DESIGN CHECKPOINT POLICY:
         }
         const telemetry = readVpsTelemetry(mafia.config.stateRoot);
         if (telemetry) {
-          const lines = formatVpsTelemetry(telemetry, { compact: true }).split("\n").slice(0, 12);
+          const lines = formatVpsWidget(telemetry);
           const vps = lines.join("\n");
           if (vps !== lastVps) {
             ctx.ui.setWidget("mafia-vps", lines);

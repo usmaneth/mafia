@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { formatVpsTelemetry } from "../src/format";
+import { formatVpsTelemetry, formatVpsWidget } from "../src/format";
 import type { VpsTelemetry } from "../src/types";
 
 const telemetry: VpsTelemetry = {
@@ -56,5 +56,17 @@ describe("VPS telemetry", () => {
 
   test("formats an unreachable VPS", () => {
     expect(formatVpsTelemetry({ ...telemetry, reachable: false, error: "timeout" })).toContain("offline - timeout");
+  });
+
+  test("formats a stable compact widget", async () => {
+    const first = formatVpsWidget(telemetry);
+    await Bun.sleep(20);
+    const second = formatVpsWidget(telemetry);
+
+    expect(first).toEqual(second);
+    expect(first.length).toBeLessThanOrEqual(6);
+    expect(Math.max(...first.map((line) => line.length))).toBeLessThanOrEqual(80);
+    expect(first.join("\n")).toContain("claude:?");
+    expect(first.join("\n")).toContain("watch update:ok");
   });
 });
