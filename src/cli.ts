@@ -1,13 +1,15 @@
 #!/usr/bin/env bun
 import { readFileSync } from "node:fs";
 import { ensureConfig, loadConfig, resolveHost } from "./config";
-import { formatJobs, formatTeam, formatTeams } from "./format";
+import { formatHub, formatJobs, formatMessages, formatTeam, formatTeams } from "./format";
 import { isHarnessName } from "./harnesses";
 import { buildOmpArgs } from "./launch";
 import { installRemote } from "./remote";
 import { MafiaService } from "./service";
 import { TeamService } from "./team";
-import type { JobState, PipelineSpec } from "./types";
+import { protocolSpec } from "./protocols";
+import { routeTask } from "./router";
+import { teamProtocolNames, type JobState, type MessageType, type PipelineSpec, type TeamProtocolName } from "./types";
 
 function option(args: string[], name: string): string | undefined {
   const index = args.indexOf(name);
@@ -44,6 +46,21 @@ usage:
   mafia team status TEAM [--json]
   mafia team collect TEAM
   mafia team cancel TEAM
+  mafia team pause TEAM
+  mafia team resume TEAM
+  mafia team add TEAM --file TASK.json
+  mafia team update TEAM TASK --file PATCH.json
+  mafia team retry TEAM TASK [--file PATCH.json]
+  mafia team checkpoint TEAM [--name NAME]
+  mafia team restore CHECKPOINT
+  mafia hub TEAM
+  mafia message TEAM --body TEXT [--to JOB] [--type TYPE]
+  mafia decisions TEAM
+  mafia decision TEAM --question TEXT --selected TEXT
+  mafia events [--team TEAM] [--job JOB]
+  mafia route --capability TYPE [--host HOST]
+  mafia budget TEAM
+  mafia protocol start NAME --goal TEXT [--repo PATH]
   mafia sync [--discover]
   mafia hosts
   mafia install-remote HOST
@@ -58,7 +75,8 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   const command = argv[0];
   const controlCommands = new Set([
     "help", "-h", "--help", "jobs", "status", "watch", "dispatch", "logs", "cancel", "handoff",
-    "team", "sync", "hosts", "install-remote", "eval", "__team-run", "doctor",
+    "team", "hub", "message", "decisions", "decision", "events", "route", "budget", "protocol",
+    "sync", "hosts", "install-remote", "eval", "__team-run", "doctor",
   ]);
   if (!command || command === "shell" || command === "run" || !controlCommands.has(command)) {
     const { spawnSync } = await import("node:child_process");
@@ -147,9 +165,102 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
         console.log(teams.collect(required(args[1], "The team ID is required.")));
       } else if (action === "cancel") {
         console.log(formatTeam(teams.cancel(required(args[1], "The team ID is required."))));
+      } else if (action === "pause") {
+        console.log(formatTeam(teams.pause(required(args[1], "The team ID is required."))));
+      } else if (action === "resume") {
+        console.log(formatTeam(teams.resume(required(args[1], "The team ID is required."))));
+      } else if (action === "add") {
+        const file = required(option(args, "--file"), "--file is required.");
+        console.log(formatTeam(teams.addTask(
+          required(args[1], "The team ID is required."),
+          JSON.parse(readFileSync(file, "utf8")),
+        )));
+      } else if (action === "update") {
+        const file = required(option(args, "--file"), "--file is required.");
+        console.log(formatTeam(teams.updateTask(
+          required(args[1], "The team ID is required."),
+          required(args[2], "The task ID is required."),
+          JSON.parse(readFileSync(file, "utf8")),
+        )));
+      } else if (action === "retry") {
+        const file = option(args, "--file");
+        console.log(formatTeam(teams.retryTask(
+          required(args[1], "The team ID is required."),
+          required(args[2], "The task ID is required."),
+          file ? JSON.parse(readFileSync(file, "utf8")) : undefined,
+        )));
+      } else if (action === "checkpoint") {
+        printJson(teams.checkpoint(required(args[1], "The team ID is required."), option(args, "--name")));
+      } else if (action === "restore") {
+        console.log(formatTeam(teams.restore(required(args[1], "The checkpoint ID is required."))));
       } else {
-        throw new Error("Use team start, list, status, collect, or cancel.");
+        throw new Error("Use team start, list, status, collect, cancel, pause, resume, add, update, retry, checkpoint, or restore.");
       }
+      return;
+    }
+    case "hub": {
+      const team = teams.get(required(args[0], "The team ID is required."));
+      console.log(formatHub(team, mafia.list(500), mafia.control.messages({ teamId: team.id, limit: 20 })));
+      return;
+    }
+    case "message": {
+      const teamId = required(args[0], "The team ID is required.");
+      const message = mafia.sendMessage({
+        teamId,
+        from: option(args, "--from") ?? "lead",
+        to: option(args, "--to"),
+        type: (option(args, "--type") ?? "message") as MessageType,
+        body: required(option(args, "--body"), "--body is required."),
+      });
+      printJson(message);
+      return;
+    }
+    case "decisions":
+      printJson(mafia.control.decisions(required(args[0], "The team ID is required.")));
+      return;
+    case "decision": {
+      const teamId = required(args[0], "The team ID is required.");
+      printJson(teams.recordDecision(teamId, {
+        question: required(option(args, "--question"), "--question is required."),
+        recommendation: option(args, "--recommendation"),
+        alternatives: option(args, "--alternatives")?.split("|").filter(Boolean) ?? [],
+        selected: required(option(args, "--selected"), "--selected is required."),
+        selectedBy: option(args, "--by") ?? "Usman",
+        affectedTasks: option(args, "--tasks")?.split(",").filter(Boolean) ?? [],
+      }));
+      return;
+    }
+    case "events":
+      printJson(mafia.store.listEvents({
+        teamId: option(args, "--team"),
+        jobId: option(args, "--job"),
+        limit: Number(option(args, "--limit") ?? 200),
+      }));
+      return;
+    case "route":
+      printJson(routeTask(loadConfig(), {
+        capability: (option(args, "--capability") ?? "general") as any,
+        host: option(args, "--host"),
+        downgrade: has(args, "--cheap"),
+      }));
+      return;
+    case "budget": {
+      const team = teams.get(required(args[0], "The team ID is required."));
+      printJson({
+        budget: team.budget,
+        usage: mafia.control.usage(team.id),
+        byProvider: mafia.store.usageByProvider(team.id),
+        byHarness: mafia.store.usageBreakdown(team.id),
+      });
+      return;
+    }
+    case "protocol": {
+      if (args[0] !== "start") throw new Error("Use protocol start.");
+      const name = required(args[1], "The protocol name is required.") as TeamProtocolName;
+      if (!teamProtocolNames.includes(name)) throw new Error(`Unknown protocol: ${name}`);
+      const goal = required(option(args, "--goal"), "--goal is required.");
+      const spec = protocolSpec(name, goal, option(args, "--repo"));
+      console.log(formatTeam(teams.create(goal, spec)));
       return;
     }
     case "sync": {

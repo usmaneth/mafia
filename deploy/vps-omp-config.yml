@@ -1,0 +1,45 @@
+tools:
+  approvalMode: yolo
+ask:
+  enabled: true
+  timeout: 0
+  notify: "on"
+secrets:
+  enabled: true
+startup:
+  checkUpdate: false
+marketplace:
+  autoUpdate: "off"
+enabledModels:
+  - anthropic/claude-opus-5
+  - openai-codex/gpt-5.4
+  - kimi-code/k3
+  - xai-oauth/grok-build
+  - openrouter/nvidia/nemotron-3-ultra-550b-a55b:free
+  - google/gemini-3.7-flash
+modelRoles:
+  default: openrouter/nvidia/nemotron-3-ultra-550b-a55b:free:high
+  smol: google/gemini-3.7-flash
+  slow: anthropic/claude-opus-5
+  task: openrouter/nvidia/nemotron-3-ultra-550b-a55b:free
+  plan: xai-oauth/grok-build
+setupVersion: 2
+providers:
+  maxInFlightRequests:
+    openrouter: 24
+    xai-oauth: 16
+    openai-codex: 16
+    anthropic: 16
+    google: 16
+    kimi-code: 8
+  webSearchOrder: []
+symbolPreset: ascii
+composer:
+  shape: box
+theme:
+  dark: dark-terminal
+extensions:
+  - /home/usman/mafia/extension/index.ts
+skills:
+  customDirectories:
+    - /home/usman/mafia/skills

@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "defaultHost": "local",
+  "defaultHarness": "codex",
+  "stateRoot": "/home/usman/.local/share/mafia",
+  "vaultRoot": "/home/usman/vault",
+  "harnessModels": {
+    "opencode": "opencode/nemotron-3-ultra-free"
+  },
+  "hosts": {
+    "local": {
+      "name": "local",
+      "kind": "local",
+      "stateRoot": "/home/usman/.local/share/mafia",
+      "maxParallel": 64
+    }
+  }
+}

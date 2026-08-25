@@ -1,5 +1,8 @@
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
-import { formatJobs, formatTeam, formatTeams } from "../src/format";
+import { formatHub, formatJobs, formatMessages, formatTeam, formatTeams } from "../src/format";
+import { protocolSpec } from "../src/protocols";
+import { routeTask } from "../src/router";
+import { loadConfig } from "../src/config";
 import { MafiaService } from "../src/service";
 import { TeamService } from "../src/team";
 
@@ -45,7 +48,21 @@ MAFIA DESIGN CHECKPOINT POLICY:
         labels: z.array(z.string()).optional(),
         retries: z.number().int().min(0).max(5).optional().default(1),
         timeoutSeconds: z.number().int().min(30).max(86400).optional().default(3600),
+        capability: z.enum(["architecture", "implementation", "research", "review", "security", "testing", "synthesis", "general"]).optional(),
+        preferredModels: z.array(z.string()).optional(),
+        expectedValue: z.number().min(0).max(1).optional(),
       })).min(1).max(128),
+      budget: z.object({
+        maxCostUsd: z.number().positive().optional(),
+        maxTokens: z.number().int().positive().optional(),
+        maxWorkers: z.number().int().min(1).max(128).optional(),
+        maxRuntimeSeconds: z.number().int().positive().optional(),
+        warningPercent: z.number().min(1).max(100).optional(),
+        downgradeAtPercent: z.number().min(1).max(100).optional(),
+        stopAtPercent: z.number().min(1).max(100).optional(),
+        providerCostUsd: z.record(z.string(), z.number().positive()).optional(),
+        minExpectedValue: z.number().min(0).max(1).optional(),
+      }).optional(),
     }),
     async execute(_toolCallId, rawParams) {
       const params = rawParams as any;
@@ -53,11 +70,155 @@ MAFIA DESIGN CHECKPOINT POLICY:
         name: params.name,
         maxParallel: params.maxParallel,
         tasks: params.tasks,
+        budget: params.budget,
       });
       return {
         content: [{ type: "text", text: `${formatTeam(team)}\n\nUse mafia_team_status to supervise this team.` }],
         details: { id: team.id, state: team.state, taskCount: team.tasks.length },
       };
+    },
+  });
+
+  pi.registerTool({
+    name: "mafia_hub",
+    label: "Mafia Agent Hub",
+    description: "Show one live control view for all local and VPS workers, models, states, and messages.",
+    parameters: z.object({ teamId: z.string() }),
+    async execute(_toolCallId, rawParams) {
+      const { teamId } = rawParams as any;
+      const mafia = new MafiaService();
+      const team = new TeamService().get(teamId);
+      const messages = mafia.control.messages({ teamId, limit: 30 });
+      return {
+        content: [{ type: "text", text: formatHub(team, mafia.list(500), messages) }],
+        details: { team, messages },
+      };
+    },
+  });
+
+  pi.registerTool({
+    name: "mafia_message",
+    label: "Message Mafia Team",
+    description: "Send a direct or broadcast message to workers. Use typed findings, blockers, help, reviews, and handoffs.",
+    parameters: z.object({
+      teamId: z.string(),
+      to: z.string().optional().describe("Target job ID. Omit this value for a team broadcast."),
+      type: z.enum(["message", "need-help", "finding", "blocker", "review-request", "handoff"]).optional().default("message"),
+      body: z.string(),
+      artifacts: z.array(z.object({
+        path: z.string(),
+        kind: z.string().optional(),
+        sha256: z.string().optional(),
+        description: z.string().optional(),
+      })).optional(),
+    }),
+    async execute(_toolCallId, rawParams) {
+      const message = new MafiaService().sendMessage({ ...(rawParams as any), from: "omp-lead" });
+      return {
+        content: [{ type: "text", text: `Sent ${message.type} ${message.id}${message.to ? ` to ${message.to}` : " to the team"}.` }],
+        details: message,
+      };
+    },
+  });
+
+  pi.registerTool({
+    name: "mafia_team_control",
+    label: "Control Mafia Team",
+    description: "Pause, resume, add, update, retry, replace, checkpoint, or restore live Mafia work.",
+    parameters: z.object({
+      action: z.enum(["pause", "resume", "add", "update", "retry", "replace", "checkpoint", "restore"]),
+      teamId: z.string().optional(),
+      taskId: z.string().optional(),
+      checkpointId: z.string().optional(),
+      name: z.string().optional(),
+      task: z.any().optional(),
+      patch: z.any().optional(),
+    }),
+    async execute(_toolCallId, rawParams) {
+      const params = rawParams as any;
+      const teams = new TeamService();
+      let value: unknown;
+      if (params.action === "pause") value = teams.pause(params.teamId);
+      else if (params.action === "resume") value = teams.resume(params.teamId);
+      else if (params.action === "add") value = teams.addTask(params.teamId, params.task);
+      else if (params.action === "update") value = teams.updateTask(params.teamId, params.taskId, params.patch);
+      else if (params.action === "retry" || params.action === "replace") {
+        value = teams.retryTask(params.teamId, params.taskId, params.patch);
+      } else if (params.action === "checkpoint") {
+        value = teams.checkpoint(params.teamId, params.name);
+      } else {
+        value = teams.restore(params.checkpointId);
+      }
+      return { content: [{ type: "text", text: JSON.stringify(value, null, 2) }], details: value as any };
+    },
+  });
+
+  pi.registerTool({
+    name: "mafia_decision",
+    label: "Record Mafia Decision",
+    description: "Record one user or architecture decision and inject it into all affected worker context packs.",
+    parameters: z.object({
+      teamId: z.string(),
+      question: z.string(),
+      recommendation: z.string().optional(),
+      alternatives: z.array(z.string()).optional(),
+      selected: z.string(),
+      selectedBy: z.string().optional().default("Usman"),
+      affectedTasks: z.array(z.string()).optional(),
+    }),
+    async execute(_toolCallId, rawParams) {
+      const params = rawParams as any;
+      const value = new TeamService().recordDecision(params.teamId, {
+        question: params.question,
+        recommendation: params.recommendation,
+        alternatives: params.alternatives ?? [],
+        selected: params.selected,
+        selectedBy: params.selectedBy,
+        affectedTasks: params.affectedTasks ?? [],
+      });
+      return { content: [{ type: "text", text: `Recorded ${value.id}: ${value.selected}` }], details: value };
+    },
+  });
+
+  pi.registerTool({
+    name: "mafia_route",
+    label: "Route Mafia Task",
+    description: "Select a harness, model, and host from task capability, observed reliability, and budget mode.",
+    parameters: z.object({
+      capability: z.enum(["architecture", "implementation", "research", "review", "security", "testing", "synthesis", "general"]),
+      host: z.string().optional(),
+      preferredModels: z.array(z.string()).optional(),
+      cheap: z.boolean().optional().default(false),
+    }),
+    async execute(_toolCallId, rawParams) {
+      const params = rawParams as any;
+      const value = routeTask(loadConfig(), {
+        capability: params.capability,
+        host: params.host,
+        preferredModels: params.preferredModels,
+        downgrade: params.cheap,
+      });
+      return { content: [{ type: "text", text: JSON.stringify(value, null, 2) }], details: value };
+    },
+  });
+
+  pi.registerTool({
+    name: "mafia_protocol_start",
+    label: "Start Mafia Protocol",
+    description: "Start a reusable adversarial team protocol.",
+    parameters: z.object({
+      protocol: z.enum([
+        "builder-reviewer", "three-way-implementation", "research-council", "pr-council",
+        "migration-factory", "incident-room", "design-council",
+      ]),
+      goal: z.string(),
+      repo: z.string().optional(),
+    }),
+    async execute(_toolCallId, rawParams) {
+      const params = rawParams as any;
+      const spec = protocolSpec(params.protocol, params.goal, params.repo);
+      const team = new TeamService().create(params.goal, spec);
+      return { content: [{ type: "text", text: formatTeam(team) }], details: team };
     },
   });
 
@@ -232,6 +393,14 @@ MAFIA DESIGN CHECKPOINT POLICY:
         const text = args.trim();
         if (text.startsWith("team ")) {
           ctx.ui.notify(formatTeam(new TeamService().get(text.slice(5).trim())), "info");
+        } else if (text.startsWith("hub ")) {
+          const teamId = text.slice(4).trim();
+          const mafia = new MafiaService();
+          const team = new TeamService().get(teamId);
+          ctx.ui.notify(formatHub(team, mafia.list(500), mafia.control.messages({ teamId, limit: 20 })), "info");
+        } else if (text.startsWith("messages ")) {
+          const teamId = text.slice(9).trim();
+          ctx.ui.notify(formatMessages(new MafiaService().control.messages({ teamId, limit: 30 })), "info");
         } else {
           const teams = formatTeams(new TeamService().list(10));
           const jobs = formatJobs(new MafiaService().list(20));
@@ -244,7 +413,26 @@ MAFIA DESIGN CHECKPOINT POLICY:
   });
 
   pi.on("session_start", async (_event, ctx) => {
-    const active = new MafiaService().list(200).filter((job) => ["queued", "starting", "running"].includes(job.state));
-    if (active.length) ctx.ui.setStatus("mafia", `Mafia ${active.length} active`);
+    const refresh = () => {
+      try {
+        const mafia = new MafiaService();
+        const active = mafia.list(200).filter((job) => ["queued", "starting", "running"].includes(job.state));
+        const teams = new TeamService().list(10);
+        ctx.ui.setStatus("mafia", active.length ? `Mafia ${active.length} active` : "Mafia idle");
+        const team = teams.find((item) => item.state === "running");
+        if (team) {
+          const jobs = mafia.list(500);
+          const lines = formatHub(team, jobs, mafia.control.messages({ teamId: team.id, limit: 5 }))
+            .split("\n")
+            .slice(0, 14);
+          ctx.ui.setWidget("mafia-hub", lines);
+        } else {
+          ctx.ui.setWidget("mafia-hub", undefined);
+        }
+      } catch {}
+    };
+    refresh();
+    const timer = setInterval(refresh, 3000);
+    timer.unref();
   });
 }

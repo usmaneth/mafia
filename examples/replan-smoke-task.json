@@ -1,0 +1,13 @@
+{
+  "id": "replanned-verifier",
+  "title": "Verify live replanning and decisions",
+  "prompt": "Read the Mafia context pack. Report the selected storage model. Finish with REPLAN_READY.",
+  "harness": "omp",
+  "model": "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free",
+  "host": "local",
+  "isolate": false,
+  "dependsOn": [
+    "synthesis"
+  ],
+  "timeoutSeconds": 180
+}

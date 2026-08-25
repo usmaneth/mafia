@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
-import type { HostConfig, JobSpec, JobStatus } from "./types";
+import type { HostConfig, JobSpec, JobStatus, MafiaEvent, MafiaMessage } from "./types";
 import { repoRoot } from "./config";
 import { run, shellQuote } from "./process";
 
@@ -20,11 +20,17 @@ export function dispatchRemote(host: HostConfig, spec: JobSpec): number {
     throw new Error(`Host ${host.name} is not a complete SSH host.`);
   }
   installRemote(host);
-  const localSpec = join(tmpdir(), `${spec.id}.json`);
-  writeFileSync(localSpec, `${JSON.stringify(spec, null, 2)}\n`, { mode: 0o600 });
   const remoteDir = join(host.stateRoot, "jobs", spec.id);
   const remoteSpec = join(remoteDir, "spec.json");
   run("ssh", [host.target, `mkdir -p ${shellQuote(remoteDir)}`]);
+  const remoteValue = { ...spec };
+  if (spec.contextPackPath && existsSync(spec.contextPackPath)) {
+    const remoteContext = join(remoteDir, "context.md");
+    run("scp", [spec.contextPackPath, `${host.target}:${remoteContext}`]);
+    remoteValue.contextPackPath = remoteContext;
+  }
+  const localSpec = join(tmpdir(), `${spec.id}.json`);
+  writeFileSync(localSpec, `${JSON.stringify(remoteValue, null, 2)}\n`, { mode: 0o600 });
   run("scp", [localSpec, `${host.target}:${remoteSpec}`]);
   const user = host.harnessUsers?.[spec.harness] ?? host.defaultUser;
   if (user) run("ssh", [host.target, `chown -R ${shellQuote(user)} ${shellQuote(remoteDir)}`]);
@@ -34,6 +40,46 @@ export function dispatchRemote(host: HostConfig, spec: JobSpec): number {
   ].join(" ");
   const command = user ? `sudo -iu ${shellQuote(user)} bash -lc ${shellQuote(inner)}` : inner;
   return Number(run("ssh", [host.target, command]));
+}
+
+export function appendRemoteMessage(host: HostConfig, message: MafiaMessage): void {
+  if (host.kind !== "ssh" || !host.target) return;
+  const encoded = Buffer.from(`${JSON.stringify(message)}\n`).toString("base64");
+  const path = join(host.stateRoot, "jobs", message.to ?? "", "inbox.jsonl");
+  const ownership = host.defaultUser ? ` && chown ${shellQuote(host.defaultUser)} ${shellQuote(path)}` : "";
+  run("ssh", [
+    host.target,
+    `mkdir -p ${shellQuote(dirname(path))} && printf %s ${shellQuote(encoded)} | base64 -d >> ${shellQuote(path)}${ownership}`,
+  ]);
+}
+
+export function appendRemoteControl(host: HostConfig, id: string, event: MafiaEvent): void {
+  if (host.kind !== "ssh" || !host.target) return;
+  const encoded = Buffer.from(`${JSON.stringify(event)}\n`).toString("base64");
+  const path = join(host.stateRoot, "jobs", id, "control.jsonl");
+  const ownership = host.defaultUser ? ` && chown ${shellQuote(host.defaultUser)} ${shellQuote(path)}` : "";
+  run("ssh", [
+    host.target,
+    `mkdir -p ${shellQuote(dirname(path))} && printf %s ${shellQuote(encoded)} | base64 -d >> ${shellQuote(path)}${ownership}`,
+  ]);
+}
+
+export function discoverRemoteEvents(host: HostConfig): { events: MafiaEvent[]; messages: MafiaMessage[] } {
+  if (host.kind !== "ssh" || !host.target) return { events: [], messages: [] };
+  const audit = join(host.stateRoot, "events", "audit.jsonl");
+  const messages = join(host.stateRoot, "events", "messages.jsonl");
+  const raw = run("ssh", [
+    host.target,
+    `printf '%s\\n' __MAFIA_EVENTS__; tail -n 10000 ${shellQuote(audit)} 2>/dev/null || true; ` +
+      `printf '%s\\n' __MAFIA_MESSAGES__; tail -n 10000 ${shellQuote(messages)} 2>/dev/null || true`,
+  ]);
+  const [eventRaw = "", messageRaw = ""] = raw
+    .split("__MAFIA_MESSAGES__")
+    .map((part) => part.replace("__MAFIA_EVENTS__", "").trim());
+  return {
+    events: parseJsonLines<MafiaEvent>(eventRaw),
+    messages: parseJsonLines<MafiaMessage>(messageRaw),
+  };
 }
 
 export function readRemoteStatus(host: HostConfig, id: string): JobStatus | undefined {
@@ -86,4 +132,14 @@ export function discoverRemote(host: HostConfig): JobStatus[] {
     }
   }
   return statuses;
+}
+
+function parseJsonLines<T>(raw: string): T[] {
+  return raw.split("\n").filter(Boolean).flatMap((line) => {
+    try {
+      return [JSON.parse(line) as T];
+    } catch {
+      return [];
+    }
+  });
 }

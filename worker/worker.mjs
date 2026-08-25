@@ -22,12 +22,28 @@ const jobDir = join(spec.stateRoot, "jobs", spec.id);
 const statusPath = join(jobDir, "status.json");
 const logPath = join(jobDir, "output.log");
 const resultPath = join(jobDir, "result.txt");
+const controlPath = join(jobDir, "control.jsonl");
+const auditPath = join(spec.stateRoot, "events", "audit.jsonl");
 mkdirSync(jobDir, { recursive: true });
+mkdirSync(dirname(auditPath), { recursive: true });
 
 let child;
 let heartbeat;
 let timeout;
 let timedOut = false;
+let paused = false;
+let controlOffset = 0;
+let firstOutputAt;
+let usage = {
+  inputTokens: 0,
+  outputTokens: 0,
+  cacheReadTokens: 0,
+  cacheWriteTokens: 0,
+  costUsd: 0,
+  requests: 0,
+  failures: 0,
+  runtimeSeconds: 0,
+};
 let status = {
   ...spec,
   state: "starting",
@@ -44,6 +60,20 @@ function writeStatus(patch = {}) {
 
 function log(message) {
   appendFileSync(logPath, `[mafia ${new Date().toISOString()}] ${message}\n`);
+}
+
+function event(type, data = {}) {
+  const value = {
+    id: `evt-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
+    teamId: spec.pipelineId,
+    jobId: spec.id,
+    host: spec.host,
+    actor: spec.id,
+    type,
+    data,
+    createdAt: new Date().toISOString(),
+  };
+  appendFileSync(auditPath, `${JSON.stringify(value)}\n`);
 }
 
 function git(args, cwd) {
@@ -145,6 +175,68 @@ function extractResult(raw) {
   return (plain || raw).slice(-20000).trim();
 }
 
+function numeric(value) {
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+function collectUsage(value) {
+  if (!value || typeof value !== "object") return;
+  const source = value.usage && typeof value.usage === "object" ? value.usage : value;
+  const input = numeric(source.input_tokens ?? source.inputTokens ?? source.prompt_tokens ?? source.promptTokens ?? source.input);
+  const output = numeric(source.output_tokens ?? source.outputTokens ?? source.completion_tokens ?? source.completionTokens ?? source.output);
+  const cacheRead = numeric(source.cache_read_tokens ?? source.cacheReadTokens ?? source.cached_input_tokens ?? source.cacheRead);
+  const cacheWrite = numeric(source.cache_write_tokens ?? source.cacheWriteTokens ?? source.cacheWrite);
+  const cost = numeric(
+    source.cost_usd ?? source.costUsd ?? source.total_cost_usd ?? source.totalCostUsd ??
+    (source.cost && typeof source.cost === "object" ? source.cost.total : undefined),
+  );
+  usage.inputTokens = Math.max(usage.inputTokens, input);
+  usage.outputTokens = Math.max(usage.outputTokens, output);
+  usage.cacheReadTokens = Math.max(usage.cacheReadTokens, cacheRead);
+  usage.cacheWriteTokens = Math.max(usage.cacheWriteTokens, cacheWrite);
+  usage.costUsd = Math.max(usage.costUsd, cost);
+  if (input || output || cost) usage.requests = Math.max(1, usage.requests);
+  for (const child of Object.values(value)) {
+    if (child && typeof child === "object") collectUsage(child);
+  }
+}
+
+function consumeControl() {
+  if (!existsSync(controlPath) || !child?.pid) return;
+  const raw = readFileSync(controlPath, "utf8");
+  const addition = raw.slice(controlOffset);
+  controlOffset = raw.length;
+  for (const line of addition.split("\n").filter(Boolean)) {
+    let command;
+    try {
+      command = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    const action = String(command.type || "").replace("control.", "");
+    if (action === "pause" && !paused) {
+      try {
+        process.kill(-child.pid, "SIGSTOP");
+        paused = true;
+        writeStatus({ pausedAt: new Date().toISOString() });
+        event("worker.paused");
+      } catch {}
+    } else if (action === "resume" && paused) {
+      try {
+        process.kill(-child.pid, "SIGCONT");
+        paused = false;
+        writeStatus({ pausedAt: undefined });
+        event("worker.resumed");
+      } catch {}
+    } else if (action === "stop" || action === "cancel") {
+      stop(`control.${action}`);
+    } else if (action === "redirect") {
+      log("received a redirect message; the harness must read its Mafia inbox");
+      event("worker.redirected", command.data || {});
+    }
+  }
+}
+
 function stop(signal) {
   log(`received ${signal}`);
   if (child?.pid) {
@@ -164,15 +256,28 @@ process.on("SIGINT", () => stop("SIGINT"));
 try {
   writeStatus({ pid: process.pid, startedAt: new Date().toISOString() });
   const cwd = prepareWorkspace();
+  if (spec.contextPackPath && existsSync(spec.contextPackPath)) {
+    spec.prompt = `${spec.prompt}\n\nRead this Mafia context pack before work:\n${spec.contextPackPath}`;
+  }
   const [command, args] = commandFor(cwd);
   writeStatus({ state: "running", command: [command, ...args], heartbeatAt: new Date().toISOString() });
   log(`started ${spec.harness} in ${cwd}`);
+  event("worker.started", { harness: spec.harness, model: spec.model, cwd });
 
   const output = [];
   let outputBytes = 0;
   child = spawn(command, args, {
     cwd,
-    env: { ...process.env, MAFIA_JOB_ID: spec.id, MAFIA_PARENT_ID: spec.parentId || "" },
+    env: {
+      ...process.env,
+      MAFIA_JOB_ID: spec.id,
+      MAFIA_PARENT_ID: spec.parentId || "",
+      MAFIA_TEAM_ID: spec.pipelineId || "",
+      MAFIA_TASK_ID: spec.taskId || "",
+      MAFIA_HOST: spec.host,
+      MAFIA_STATE_ROOT: spec.stateRoot,
+      MAFIA_ROOM: spec.pipelineId ? `team:${spec.pipelineId}` : "mafia",
+    },
     detached: true,
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -186,8 +291,14 @@ try {
 
   for (const stream of [child.stdout, child.stderr]) {
     stream.on("data", (chunk) => {
+      if (!firstOutputAt) firstOutputAt = Date.now();
       const text = chunk.toString();
       appendFileSync(logPath, text);
+      for (const line of text.split("\n")) {
+        try {
+          collectUsage(JSON.parse(line));
+        } catch {}
+      }
       output.push(text);
       outputBytes += text.length;
       while (outputBytes > 500000 && output.length > 1) {
@@ -198,6 +309,8 @@ try {
 
   heartbeat = setInterval(() => {
     writeStatus({ heartbeatAt: new Date().toISOString() });
+    consumeControl();
+    event("presence.heartbeat", { pid: process.pid, paused });
   }, 5000);
 
   child.on("error", (error) => {
@@ -218,6 +331,10 @@ try {
     const result = extractResult(output.join(""));
     writeFileSync(resultPath, result);
     const succeeded = code === 0 && !timedOut;
+    const completedAt = new Date().toISOString();
+    usage.runtimeSeconds = Math.max(0, (new Date(completedAt).getTime() - new Date(status.startedAt).getTime()) / 1000);
+    usage.failures = succeeded ? 0 : 1;
+    if (firstOutputAt) usage.ttftMs = firstOutputAt - new Date(status.startedAt).getTime();
     let gitSummary;
     try {
       gitSummary = git(["status", "--short"], cwd);
@@ -232,9 +349,11 @@ try {
           : `Harness exited with ${code ?? signal ?? "unknown"}.`,
       result,
       gitSummary,
-      completedAt: new Date().toISOString(),
+      usage,
+      completedAt,
       heartbeatAt: new Date().toISOString(),
     });
+    event(succeeded ? "worker.succeeded" : "worker.failed", { exitCode: code, usage, gitSummary });
     log(`finished with exit code ${code ?? "unknown"}`);
     process.exitCode = code ?? 1;
   });

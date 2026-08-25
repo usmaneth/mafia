@@ -4,10 +4,30 @@ import { loadConfig, resolveHost, repoRoot } from "./config";
 import { createId } from "./id";
 import { isHarnessName } from "./harnesses";
 import { spawnDetached } from "./process";
-import { cancelRemote, dispatchRemote, discoverRemote, readRemoteLog, readRemoteStatus } from "./remote";
+import {
+  appendRemoteControl,
+  appendRemoteMessage,
+  cancelRemote,
+  dispatchRemote,
+  discoverRemote,
+  discoverRemoteEvents,
+  readRemoteLog,
+  readRemoteStatus,
+} from "./remote";
 import { JobStore } from "./store";
 import { extractHarnessResult } from "./result";
-import type { HarnessName, JobSpec, JobState, JobStatus } from "./types";
+import { buildHandoffPacket } from "./packet";
+import { ControlPlane } from "./control";
+import type {
+  ArtifactRef,
+  HarnessName,
+  JobSpec,
+  JobState,
+  JobStatus,
+  MafiaMessage,
+  MessageType,
+  TeamBudget,
+} from "./types";
 
 export interface DispatchInput {
   title?: string;
@@ -23,19 +43,20 @@ export interface DispatchInput {
   pipelineId?: string;
   labels?: string[];
   timeoutSeconds?: number;
+  taskId?: string;
+  contextPackPath?: string;
+  budget?: TeamBudget;
 }
 
 export class MafiaService {
   readonly config = loadConfig();
   readonly store = new JobStore(this.config.stateRoot);
+  readonly control = new ControlPlane(this.config.stateRoot);
 
   dispatch(input: DispatchInput): JobStatus {
     const harness = input.harness ?? this.config.defaultHarness;
     if (!isHarnessName(harness)) throw new Error(`Unknown harness: ${harness}`);
     const host = resolveHost(this.config, input.host);
-    if (host.kind === "ssh" && harness === "omp") {
-      throw new Error("OMP is not installed on this host. Use another harness or install OMP.");
-    }
     const id = createId();
     const createdAt = new Date().toISOString();
     const spec: JobSpec = {
@@ -55,6 +76,9 @@ export class MafiaService {
       createdAt,
       stateRoot: host.stateRoot,
       timeoutSeconds: Math.min(86_400, Math.max(30, input.timeoutSeconds ?? 3600)),
+      taskId: input.taskId,
+      contextPackPath: input.contextPackPath,
+      budget: input.budget,
     };
     const localJobDir = join(this.config.stateRoot, "jobs", id);
     mkdirSync(localJobDir, { recursive: true });
@@ -66,6 +90,14 @@ export class MafiaService {
       logPath: join(host.stateRoot, "jobs", id, "output.log"),
     };
     this.store.upsert(initial);
+    this.control.event({
+      teamId: spec.pipelineId,
+      jobId: spec.id,
+      host: spec.host,
+      actor: "lead",
+      type: "job.queued",
+      data: { harness: spec.harness, model: spec.model, title: spec.title, taskId: spec.taskId },
+    });
 
     let pid: number;
     if (host.kind === "local") {
@@ -79,6 +111,7 @@ export class MafiaService {
   }
 
   reconcile(id?: string, discover = false): JobStatus[] {
+    for (const message of this.store.listUndeliveredMessages()) this.deliverMessage(message);
     const jobs = id ? [this.store.get(id)].filter(Boolean) as JobStatus[] : this.store.list(500);
     const result: JobStatus[] = [];
     const remoteByHost = new Map<string, Map<string, JobStatus>>();
@@ -87,6 +120,11 @@ export class MafiaService {
         if (host.kind !== "ssh") continue;
         const statuses = discoverRemote(host);
         remoteByHost.set(host.name, new Map(statuses.map((status) => [status.id, status])));
+        const remote = discoverRemoteEvents(host);
+        for (const event of remote.events) this.store.insertEvent(event);
+        for (const message of remote.messages) {
+          if (this.store.insertMessage(message)) this.deliverMessage(message);
+        }
       }
     }
     for (const job of jobs) {
@@ -99,6 +137,7 @@ export class MafiaService {
       if (current) {
         const checked = this.markStale(current);
         this.store.upsert(checked);
+        this.store.upsertUsage(checked);
         result.push(checked);
       } else {
         const checked = this.markStale(job);
@@ -146,6 +185,31 @@ export class MafiaService {
     else throw new Error(`No live PID for ${id}.`);
   }
 
+  sendMessage(input: {
+    teamId?: string;
+    room?: string;
+    from?: string;
+    to?: string;
+    type?: MessageType;
+    body: string;
+    artifacts?: ArtifactRef[];
+  }): MafiaMessage {
+    const message = this.control.send({
+      ...input,
+      from: input.from ?? "lead",
+      host: "local",
+    });
+    this.deliverMessage(message);
+    return message;
+  }
+
+  controlJob(id: string, action: string, data: Record<string, unknown> = {}): void {
+    const job = this.get(id);
+    const event = this.control.control(id, action, data);
+    const host = resolveHost(this.config, job.host);
+    if (host.kind === "ssh") appendRemoteControl(host, id, event);
+  }
+
   handoff(id: string, harness: HarnessName, host?: string, extra?: string): JobStatus {
     const parent = this.get(id);
     const context = [
@@ -176,6 +240,7 @@ export class MafiaService {
   private markStale(job: JobStatus): JobStatus {
     if (job.result && ["succeeded", "failed"].includes(job.state)) {
       job = { ...job, result: extractHarnessResult(job.result) };
+      job.packet = job.packet ?? buildHandoffPacket(job);
     }
     if (!["queued", "starting", "running"].includes(job.state)) return job;
     const heartbeat = job.heartbeatAt ?? job.updatedAt;
@@ -187,5 +252,25 @@ export class MafiaService {
       completedAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
+  }
+
+  private deliverMessage(message: MafiaMessage): void {
+    const jobs = this.store.list(500);
+    const recipients = message.to?.startsWith("job-")
+      ? jobs.filter((job) => job.id === message.to)
+      : message.teamId
+        ? jobs.filter((job) =>
+            job.pipelineId === message.teamId &&
+            job.id !== message.from &&
+            ["queued", "starting", "running"].includes(job.state)
+          )
+        : [];
+    for (const job of recipients) {
+      const host = resolveHost(this.config, job.host);
+      const direct = { ...message, to: job.id };
+      if (host.kind === "ssh") appendRemoteMessage(host, direct);
+      else this.control.deliverToLocalJob(direct, job.id);
+    }
+    if (recipients.length) this.store.markMessageDelivered(message.id, new Date().toISOString());
   }
 }

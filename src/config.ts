@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
+import { defaultCandidates } from "./router";
 import type { MafiaConfig } from "./types";
 
 export const repoRoot = dirname(import.meta.dir);
@@ -15,12 +16,27 @@ export function configPath(): string {
 
 export function defaultConfig(): MafiaConfig {
   return {
-    version: 1,
+    version: 2,
     defaultHost: "local",
     defaultHarness: "codex",
     stateRoot: join(homedir(), ".local", "share", "mafia"),
+    vaultRoot: join(homedir(), "vault"),
     harnessModels: {
       opencode: "opencode/nemotron-3-ultra-free",
+    },
+    routing: {
+      candidates: defaultCandidates(),
+      fallbackOrder: ["codex", "claude", "omp", "opencode", "kimi", "cline"],
+    },
+    defaultBudget: {
+      maxCostUsd: 50,
+      maxTokens: 10_000_000,
+      maxWorkers: 128,
+      maxRuntimeSeconds: 14_400,
+      warningPercent: 70,
+      downgradeAtPercent: 85,
+      stopAtPercent: 100,
+      minExpectedValue: 0.2,
     },
     hosts: {
       local: {
@@ -52,8 +68,21 @@ export function ensureConfig(): MafiaConfig {
 }
 
 export function loadConfig(): MafiaConfig {
-  const raw = JSON.parse(readFileSync(configPath(), "utf8")) as MafiaConfig;
+  const defaults = defaultConfig();
+  const input = JSON.parse(readFileSync(configPath(), "utf8")) as MafiaConfig;
+  const raw: MafiaConfig = {
+    ...defaults,
+    ...input,
+    harnessModels: { ...defaults.harnessModels, ...input.harnessModels },
+    routing: input.routing ?? defaults.routing,
+    defaultBudget: { ...defaults.defaultBudget, ...input.defaultBudget },
+    hosts: Object.fromEntries(Object.entries(input.hosts).map(([name, host]) => [
+      name,
+      { ...defaults.hosts[name], ...host },
+    ])),
+  };
   raw.stateRoot = expandHome(raw.stateRoot);
+  if (raw.vaultRoot) raw.vaultRoot = expandHome(raw.vaultRoot);
   for (const host of Object.values(raw.hosts)) {
     host.stateRoot = expandHome(host.stateRoot);
   }

@@ -1,7 +1,15 @@
 import { Database } from "bun:sqlite";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { JobStatus, JobState } from "./types";
+import type {
+  DecisionRecord,
+  JobStatus,
+  JobState,
+  MafiaEvent,
+  MafiaMessage,
+  TeamCheckpoint,
+  UsageMetrics,
+} from "./types";
 
 export class JobStore {
   readonly db: Database;
@@ -41,6 +49,69 @@ export class JobStore {
       CREATE INDEX IF NOT EXISTS jobs_state ON jobs(state);
       CREATE INDEX IF NOT EXISTS jobs_pipeline ON jobs(pipeline_id);
       CREATE INDEX IF NOT EXISTS jobs_parent ON jobs(parent_id);
+      CREATE TABLE IF NOT EXISTS events (
+        id TEXT PRIMARY KEY,
+        team_id TEXT,
+        job_id TEXT,
+        host TEXT NOT NULL,
+        actor TEXT NOT NULL,
+        type TEXT NOT NULL,
+        data_json TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS events_team ON events(team_id, created_at);
+      CREATE INDEX IF NOT EXISTS events_job ON events(job_id, created_at);
+      CREATE TABLE IF NOT EXISTS messages (
+        id TEXT PRIMARY KEY,
+        team_id TEXT,
+        room TEXT NOT NULL,
+        sender TEXT NOT NULL,
+        recipient TEXT,
+        type TEXT NOT NULL,
+        body TEXT NOT NULL,
+        artifacts_json TEXT NOT NULL,
+        host TEXT,
+        job_id TEXT,
+        created_at TEXT NOT NULL,
+        delivered_at TEXT,
+        read_at TEXT
+      );
+      CREATE INDEX IF NOT EXISTS messages_team ON messages(team_id, created_at);
+      CREATE INDEX IF NOT EXISTS messages_room ON messages(room, created_at);
+      CREATE INDEX IF NOT EXISTS messages_recipient ON messages(recipient, created_at);
+      CREATE TABLE IF NOT EXISTS decisions (
+        id TEXT PRIMARY KEY,
+        team_id TEXT NOT NULL,
+        value_json TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS decisions_team ON decisions(team_id, created_at);
+      CREATE TABLE IF NOT EXISTS usage_metrics (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        team_id TEXT,
+        job_id TEXT NOT NULL,
+        harness TEXT NOT NULL,
+        model TEXT,
+        provider TEXT,
+        input_tokens INTEGER NOT NULL,
+        output_tokens INTEGER NOT NULL,
+        cache_read_tokens INTEGER NOT NULL,
+        cache_write_tokens INTEGER NOT NULL,
+        cost_usd REAL NOT NULL,
+        requests INTEGER NOT NULL,
+        failures INTEGER NOT NULL,
+        runtime_seconds REAL NOT NULL,
+        ttft_ms REAL,
+        created_at TEXT NOT NULL,
+        UNIQUE(job_id)
+      );
+      CREATE TABLE IF NOT EXISTS checkpoints (
+        id TEXT PRIMARY KEY,
+        team_id TEXT NOT NULL,
+        value_json TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS checkpoints_team ON checkpoints(team_id, created_at);
     `);
   }
 
@@ -110,4 +181,253 @@ export class JobStore {
     this.upsert(job);
     return job;
   }
+
+  insertEvent(event: MafiaEvent): void {
+    this.db.query(`
+      INSERT OR IGNORE INTO events (id,team_id,job_id,host,actor,type,data_json,created_at)
+      VALUES ($id,$teamId,$jobId,$host,$actor,$type,$data,$createdAt)
+    `).run({
+      $id: event.id,
+      $teamId: event.teamId ?? null,
+      $jobId: event.jobId ?? null,
+      $host: event.host,
+      $actor: event.actor,
+      $type: event.type,
+      $data: JSON.stringify(event.data),
+      $createdAt: event.createdAt,
+    } as any);
+  }
+
+  listEvents(options: { teamId?: string; jobId?: string; limit?: number } = {}): MafiaEvent[] {
+    const limit = options.limit ?? 200;
+    let rows: any[];
+    if (options.jobId) {
+      rows = this.db.query("SELECT * FROM events WHERE job_id = ? ORDER BY created_at DESC LIMIT ?").all(options.jobId, limit) as any[];
+    } else if (options.teamId) {
+      rows = this.db.query("SELECT * FROM events WHERE team_id = ? ORDER BY created_at DESC LIMIT ?").all(options.teamId, limit) as any[];
+    } else {
+      rows = this.db.query("SELECT * FROM events ORDER BY created_at DESC LIMIT ?").all(limit) as any[];
+    }
+    return rows.map((row) => ({
+      id: row.id,
+      teamId: row.team_id ?? undefined,
+      jobId: row.job_id ?? undefined,
+      host: row.host,
+      actor: row.actor,
+      type: row.type,
+      data: JSON.parse(row.data_json),
+      createdAt: row.created_at,
+    }));
+  }
+
+  insertMessage(message: MafiaMessage): boolean {
+    const result = this.db.query(`
+      INSERT OR IGNORE INTO messages (
+        id,team_id,room,sender,recipient,type,body,artifacts_json,host,job_id,created_at,delivered_at,read_at
+      ) VALUES (
+        $id,$teamId,$room,$sender,$recipient,$type,$body,$artifacts,$host,$jobId,$createdAt,$deliveredAt,$readAt
+      )
+    `).run({
+      $id: message.id,
+      $teamId: message.teamId ?? null,
+      $room: message.room,
+      $sender: message.from,
+      $recipient: message.to ?? null,
+      $type: message.type,
+      $body: message.body,
+      $artifacts: JSON.stringify(message.artifacts),
+      $host: message.host ?? null,
+      $jobId: message.jobId ?? null,
+      $createdAt: message.createdAt,
+      $deliveredAt: message.deliveredAt ?? null,
+      $readAt: message.readAt ?? null,
+    } as any);
+    return result.changes > 0;
+  }
+
+  listMessages(options: { teamId?: string; room?: string; jobId?: string; limit?: number } = {}): MafiaMessage[] {
+    const limit = options.limit ?? 200;
+    let rows: any[];
+    if (options.jobId) {
+      rows = this.db.query(
+        "SELECT * FROM messages WHERE job_id = ? OR recipient = ? ORDER BY created_at DESC LIMIT ?",
+      ).all(options.jobId, options.jobId, limit) as any[];
+    } else if (options.room) {
+      rows = this.db.query("SELECT * FROM messages WHERE room = ? ORDER BY created_at DESC LIMIT ?").all(options.room, limit) as any[];
+    } else if (options.teamId) {
+      rows = this.db.query("SELECT * FROM messages WHERE team_id = ? ORDER BY created_at DESC LIMIT ?").all(options.teamId, limit) as any[];
+    } else {
+      rows = this.db.query("SELECT * FROM messages ORDER BY created_at DESC LIMIT ?").all(limit) as any[];
+    }
+    return rows.map(messageFromRow);
+  }
+
+  listUndeliveredMessages(limit = 500): MafiaMessage[] {
+    const rows = this.db.query(
+      "SELECT * FROM messages WHERE delivered_at IS NULL ORDER BY created_at LIMIT ?",
+    ).all(limit) as any[];
+    return rows.map(messageFromRow);
+  }
+
+  markMessageRead(id: string, readAt: string): void {
+    this.db.query("UPDATE messages SET read_at = ? WHERE id = ?").run(readAt, id);
+  }
+
+  markMessageDelivered(id: string, deliveredAt: string): void {
+    this.db.query("UPDATE messages SET delivered_at = ? WHERE id = ?").run(deliveredAt, id);
+  }
+
+  insertDecision(decision: DecisionRecord): void {
+    this.db.query(
+      "INSERT OR REPLACE INTO decisions (id,team_id,value_json,created_at) VALUES (?,?,?,?)",
+    ).run(decision.id, decision.teamId, JSON.stringify(decision), decision.createdAt);
+  }
+
+  listDecisions(teamId: string): DecisionRecord[] {
+    const rows = this.db.query(
+      "SELECT value_json FROM decisions WHERE team_id = ? ORDER BY created_at",
+    ).all(teamId) as Array<{ value_json: string }>;
+    return rows.map((row) => JSON.parse(row.value_json));
+  }
+
+  upsertUsage(job: JobStatus): void {
+    if (!job.usage) return;
+    const provider = job.model?.split("/")[0] ?? job.harness;
+    this.db.query(`
+      INSERT INTO usage_metrics (
+        team_id,job_id,harness,model,provider,input_tokens,output_tokens,cache_read_tokens,
+        cache_write_tokens,cost_usd,requests,failures,runtime_seconds,ttft_ms,created_at
+      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+      ON CONFLICT(job_id) DO UPDATE SET
+        input_tokens=excluded.input_tokens,output_tokens=excluded.output_tokens,
+        cache_read_tokens=excluded.cache_read_tokens,cache_write_tokens=excluded.cache_write_tokens,
+        cost_usd=excluded.cost_usd,requests=excluded.requests,failures=excluded.failures,
+        runtime_seconds=excluded.runtime_seconds,ttft_ms=excluded.ttft_ms
+    `).run(
+      job.pipelineId ?? null,
+      job.id,
+      job.harness,
+      job.model ?? null,
+      provider,
+      job.usage.inputTokens,
+      job.usage.outputTokens,
+      job.usage.cacheReadTokens,
+      job.usage.cacheWriteTokens,
+      job.usage.costUsd,
+      job.usage.requests,
+      job.usage.failures,
+      job.usage.runtimeSeconds,
+      job.usage.ttftMs ?? null,
+      job.completedAt ?? job.updatedAt,
+    );
+  }
+
+  aggregateUsage(teamId?: string): UsageMetrics {
+    const row = (teamId
+      ? this.db.query(`
+          SELECT COALESCE(SUM(input_tokens),0) input_tokens, COALESCE(SUM(output_tokens),0) output_tokens,
+          COALESCE(SUM(cache_read_tokens),0) cache_read_tokens, COALESCE(SUM(cache_write_tokens),0) cache_write_tokens,
+          COALESCE(SUM(cost_usd),0) cost_usd, COALESCE(SUM(requests),0) requests,
+          COALESCE(SUM(failures),0) failures, COALESCE(SUM(runtime_seconds),0) runtime_seconds
+          FROM usage_metrics WHERE team_id = ?
+        `).get(teamId)
+      : this.db.query(`
+          SELECT COALESCE(SUM(input_tokens),0) input_tokens, COALESCE(SUM(output_tokens),0) output_tokens,
+          COALESCE(SUM(cache_read_tokens),0) cache_read_tokens, COALESCE(SUM(cache_write_tokens),0) cache_write_tokens,
+          COALESCE(SUM(cost_usd),0) cost_usd, COALESCE(SUM(requests),0) requests,
+          COALESCE(SUM(failures),0) failures, COALESCE(SUM(runtime_seconds),0) runtime_seconds
+          FROM usage_metrics
+        `).get()) as any;
+    return {
+      inputTokens: Number(row.input_tokens),
+      outputTokens: Number(row.output_tokens),
+      cacheReadTokens: Number(row.cache_read_tokens),
+      cacheWriteTokens: Number(row.cache_write_tokens),
+      costUsd: Number(row.cost_usd),
+      requests: Number(row.requests),
+      failures: Number(row.failures),
+      runtimeSeconds: Number(row.runtime_seconds),
+    };
+  }
+
+  usageByProvider(teamId: string): Record<string, number> {
+    const rows = this.db.query(
+      "SELECT provider, COALESCE(SUM(cost_usd),0) cost FROM usage_metrics WHERE team_id = ? GROUP BY provider",
+    ).all(teamId) as Array<{ provider: string; cost: number }>;
+    return Object.fromEntries(rows.map((row) => [row.provider, Number(row.cost)]));
+  }
+
+  usageBreakdown(teamId: string): Array<Record<string, unknown>> {
+    return this.db.query(`
+      SELECT harness, model, provider, COUNT(*) jobs,
+        COALESCE(SUM(input_tokens),0) inputTokens,
+        COALESCE(SUM(output_tokens),0) outputTokens,
+        COALESCE(SUM(cache_read_tokens),0) cacheReadTokens,
+        COALESCE(SUM(cost_usd),0) costUsd,
+        COALESCE(SUM(failures),0) failures,
+        COALESCE(SUM(runtime_seconds),0) runtimeSeconds
+      FROM usage_metrics
+      WHERE team_id = ?
+      GROUP BY harness, model, provider
+      ORDER BY costUsd DESC, inputTokens + outputTokens DESC
+    `).all(teamId) as Array<Record<string, unknown>>;
+  }
+
+  routingHistory(): Map<string, UsageMetrics> {
+    const rows = this.db.query(`
+      SELECT harness, model, host, COUNT(*) requests,
+        SUM(CASE WHEN state IN ('failed','lost') THEN 1 ELSE 0 END) failures,
+        COALESCE(SUM(json_extract(status_json, '$.usage.inputTokens')),0) input_tokens,
+        COALESCE(SUM(json_extract(status_json, '$.usage.outputTokens')),0) output_tokens,
+        COALESCE(SUM(json_extract(status_json, '$.usage.costUsd')),0) cost_usd,
+        COALESCE(AVG(json_extract(status_json, '$.usage.runtimeSeconds')),0) runtime_seconds
+      FROM jobs
+      WHERE state IN ('succeeded','failed','lost')
+      GROUP BY harness, model, host
+    `).all() as any[];
+    return new Map(rows.map((row) => [
+      `${row.harness}:${row.model ?? ""}:${row.host}`,
+      {
+        inputTokens: Number(row.input_tokens),
+        outputTokens: Number(row.output_tokens),
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+        costUsd: Number(row.cost_usd),
+        requests: Number(row.requests),
+        failures: Number(row.failures),
+        runtimeSeconds: Number(row.runtime_seconds),
+      },
+    ]));
+  }
+
+  insertCheckpoint(checkpoint: TeamCheckpoint): void {
+    this.db.query(
+      "INSERT OR REPLACE INTO checkpoints (id,team_id,value_json,created_at) VALUES (?,?,?,?)",
+    ).run(checkpoint.id, checkpoint.teamId, JSON.stringify(checkpoint), checkpoint.createdAt);
+  }
+
+  getCheckpoint(id: string): TeamCheckpoint | undefined {
+    const row = this.db.query("SELECT value_json FROM checkpoints WHERE id = ?").get(id) as
+      | { value_json: string }
+      | null;
+    return row ? JSON.parse(row.value_json) : undefined;
+  }
+}
+
+function messageFromRow(row: any): MafiaMessage {
+  return {
+    id: row.id,
+    teamId: row.team_id ?? undefined,
+    room: row.room,
+    from: row.sender,
+    to: row.recipient ?? undefined,
+    type: row.type,
+    body: row.body,
+    artifacts: JSON.parse(row.artifacts_json),
+    host: row.host ?? undefined,
+    jobId: row.job_id ?? undefined,
+    createdAt: row.created_at,
+    deliveredAt: row.delivered_at ?? undefined,
+    readAt: row.read_at ?? undefined,
+  };
 }

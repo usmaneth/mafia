@@ -1,0 +1,50 @@
+{
+  "name": "full-control-smoke",
+  "goal": "Verify the complete Mafia local and VPS control plane.",
+  "maxParallel": 2,
+  "budget": {
+    "maxCostUsd": 1,
+    "maxTokens": 250000,
+    "maxWorkers": 4,
+    "maxRuntimeSeconds": 300,
+    "warningPercent": 70,
+    "downgradeAtPercent": 85,
+    "stopAtPercent": 100
+  },
+  "tasks": [
+    {
+      "id": "local-worker",
+      "title": "Verify local control",
+      "prompt": "Use bash to run sleep 12. Read the Mafia inbox. Report all message bodies. Finish with LOCAL_CONTROL_READY.",
+      "harness": "omp",
+      "model": "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free",
+      "host": "local",
+      "isolate": false,
+      "timeoutSeconds": 180
+    },
+    {
+      "id": "vps-worker",
+      "title": "Verify VPS control",
+      "prompt": "Use bash to run sleep 12. Read the Mafia inbox. Report all message bodies. Finish with VPS_CONTROL_READY.",
+      "harness": "omp",
+      "model": "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free",
+      "host": "vps",
+      "isolate": false,
+      "timeoutSeconds": 180
+    },
+    {
+      "id": "synthesis",
+      "title": "Verify compact handoffs",
+      "prompt": "Read both dependency packets. Report both readiness markers. Finish with TEAM_CONTROL_READY.",
+      "harness": "omp",
+      "model": "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free",
+      "host": "local",
+      "isolate": false,
+      "dependsOn": [
+        "local-worker",
+        "vps-worker"
+      ],
+      "timeoutSeconds": 180
+    }
+  ]
+}

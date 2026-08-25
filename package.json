@@ -7,7 +7,8 @@
     "check": "bun run typecheck && bun test",
     "typecheck": "tsc --noEmit",
     "test": "bun test",
-    "mafia": "bun src/cli.ts"
+    "mafia": "bun src/cli.ts",
+    "mafia-agent": "bun src/agent-cli.ts"
   },
   "dependencies": {
     "@oh-my-pi/pi-coding-agent": "18.0.4"

@@ -1,9 +1,21 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { execFileSync } from "node:child_process";
+import { budgetState, zeroUsage } from "./budget";
 import { createId } from "./id";
 import { spawnDetached } from "./process";
 import { MafiaService } from "./service";
-import type { PipelineSpec, TeamStatus, TeamTaskStatus } from "./types";
+import { buildContextPack } from "./context";
+import { formatPacket } from "./packet";
+import { routeTask } from "./router";
+import type {
+  DecisionRecord,
+  PipelineSpec,
+  PipelineTask,
+  TeamCheckpoint,
+  TeamStatus,
+  TeamTaskStatus,
+} from "./types";
 import { repoRoot } from "./config";
 
 const terminalStates = new Set(["succeeded", "failed", "blocked", "cancelled"]);
@@ -29,8 +41,18 @@ export class TeamService {
       createdAt: now,
       updatedAt: now,
       tasks: spec.tasks.map((task) => ({ ...task, state: "waiting", attempts: 0 })),
+      budget: { ...this.mafia.config.defaultBudget, ...spec.budget },
+      usage: zeroUsage(),
+      protocol: spec.protocol,
     };
     this.write(status);
+    this.mafia.control.event({
+      teamId: id,
+      host: "local",
+      actor: "lead",
+      type: "team.created",
+      data: { name: spec.name, taskCount: spec.tasks.length, protocol: spec.protocol },
+    });
     spawnDetached("bun", [join(repoRoot, "src", "cli.ts"), "__team-run", id], repoRoot);
     return status;
   }
@@ -58,12 +80,39 @@ export class TeamService {
 
   async run(id: string): Promise<void> {
     let team = this.get(id);
-    if (team.state !== "queued") return;
-    team.state = "running";
-    this.write(team);
+    if (team.state !== "queued" && team.state !== "running") return;
+    if (team.state === "queued") {
+      team.state = "running";
+      this.write(team);
+    }
 
     while (team.state === "running") {
+      team = this.get(id);
       team = this.refreshJobs(team);
+      team.usage = this.mafia.control.usage(team.id);
+      const budget = budgetState(team, team.usage, Date.now(), this.mafia.store.usageByProvider(team.id));
+      const budgetMode = budget.stop ? "stop" : budget.downgrade ? "downgrade" : budget.warning ? "warning" : "normal";
+      if (budgetMode !== team.budgetMode) {
+        team.budgetMode = budgetMode;
+        this.mafia.control.event({
+          teamId: team.id,
+          host: "local",
+          actor: "governor",
+          type: `budget.${budgetMode}`,
+          data: { percent: budget.percent, reasons: budget.reasons },
+        });
+      }
+      if (budget.stop) {
+        team = this.cancel(team.id);
+        team.state = "failed";
+        this.write(team);
+        break;
+      }
+      if (team.paused) {
+        this.write(team);
+        await Bun.sleep(1000);
+        continue;
+      }
       this.blockFailedDependencies(team);
       const running = team.tasks.filter((task) => task.state === "running").length;
       const ready = team.tasks.filter((task) =>
@@ -72,6 +121,20 @@ export class TeamService {
           team.tasks.find((candidate) => candidate.id === dependency)?.state === "succeeded"
         )
       );
+      if (budget.warning && team.budget?.minExpectedValue !== undefined) {
+        for (const task of ready) {
+          if (task.expectedValue === undefined || task.expectedValue >= team.budget.minExpectedValue) continue;
+          task.state = "blocked";
+          task.error = `The budget governor skipped expected value ${task.expectedValue}.`;
+          this.mafia.control.event({
+            teamId: team.id,
+            host: task.host ?? "local",
+            actor: "governor",
+            type: "budget.low-value-stop",
+            data: { taskId: task.id, expectedValue: task.expectedValue },
+          });
+        }
+      }
 
       const hostCounts = new Map<string, number>();
       for (const task of team.tasks.filter((candidate) => candidate.state === "running")) {
@@ -80,12 +143,44 @@ export class TeamService {
       }
       const slots = Math.max(0, team.maxParallel - running);
       let dispatched = 0;
+      if (ready.length && running === 0) {
+        team.checkpointId = this.checkpoint(team.id, `wave-${new Date().toISOString()}`).id;
+      }
       for (const task of ready) {
         if (dispatched >= slots) break;
+        const route = task.harness
+          ? undefined
+          : routeTask(this.mafia.config, {
+              capability: task.capability ?? "general",
+              preferredModels: task.preferredModels,
+              host: task.host,
+              downgrade: budget.downgrade,
+            }, this.mafia.store.routingHistory());
+        if (route) {
+          task.harness = route.harness;
+          task.host = route.host;
+          task.model = route.model;
+          this.mafia.control.event({
+            teamId: team.id,
+            host: route.host,
+            actor: "router",
+            type: "route.selected",
+            data: { taskId: task.id, ...route },
+          });
+        }
         const hostName = task.host ?? this.mafia.config.defaultHost;
         const hostLimit = this.mafia.config.hosts[hostName]?.maxParallel ?? 16;
         if ((hostCounts.get(hostName) ?? 0) >= hostLimit) continue;
-        const prompt = this.workerPrompt(team, task);
+        const decisions = this.mafia.control.decisions(team.id);
+        const contextPackPath = buildContextPack({
+          stateRoot: this.mafia.config.stateRoot,
+          teamId: team.id,
+          task,
+          decisions,
+          vaultRoot: this.mafia.config.vaultRoot,
+          repoRules: this.repoRules(task.repo),
+        });
+        const prompt = this.workerPrompt(team, task, contextPackPath);
         try {
           const job = this.mafia.dispatch({
             title: task.title ?? `${team.name}: ${task.id}`,
@@ -100,12 +195,24 @@ export class TeamService {
             pipelineId: team.id,
             labels: [...(task.labels ?? []), `team:${team.id}`, `task:${task.id}`],
             timeoutSeconds: task.timeoutSeconds,
+            taskId: task.id,
+            contextPackPath,
+            budget: team.budget,
           });
           task.jobId = job.id;
           task.state = "running";
           task.attempts++;
           hostCounts.set(hostName, (hostCounts.get(hostName) ?? 0) + 1);
           dispatched++;
+          this.mafia.control.send({
+            teamId: team.id,
+            room: `team:${team.id}`,
+            from: "scheduler",
+            type: "handoff",
+            body: `Started ${task.id} with ${job.harness}@${job.host}.`,
+            jobId: job.id,
+            host: job.host,
+          });
         } catch (error) {
           task.state = "failed";
           task.error = error instanceof Error ? error.message : String(error);
@@ -139,13 +246,189 @@ export class TeamService {
     return team;
   }
 
+  pause(id: string): TeamStatus {
+    const team = this.get(id);
+    team.paused = true;
+    for (const task of team.tasks) {
+      if (task.state === "running" && task.jobId) this.mafia.controlJob(task.jobId, "pause");
+    }
+    this.mafia.control.event({
+      teamId: id,
+      host: "local",
+      actor: "lead",
+      type: "team.paused",
+      data: {},
+    });
+    this.write(team);
+    return team;
+  }
+
+  resume(id: string): TeamStatus {
+    const team = this.get(id);
+    team.paused = false;
+    for (const task of team.tasks) {
+      if (task.state === "running" && task.jobId) this.mafia.controlJob(task.jobId, "resume");
+    }
+    this.mafia.control.event({
+      teamId: id,
+      host: "local",
+      actor: "lead",
+      type: "team.resumed",
+      data: {},
+    });
+    this.write(team);
+    return team;
+  }
+
+  addTask(id: string, task: PipelineTask): TeamStatus {
+    const team = this.get(id);
+    if (team.tasks.some((item) => item.id === task.id)) throw new Error(`Duplicate task ID: ${task.id}`);
+    validatePipeline({ name: team.name, tasks: [...team.tasks, task] });
+    team.tasks.push({ ...task, state: "waiting", attempts: 0 });
+    if (team.state === "succeeded" || team.state === "failed") {
+      team.state = "running";
+      team.completedAt = undefined;
+      spawnDetached("bun", [join(repoRoot, "src", "cli.ts"), "__team-run", id], repoRoot);
+    }
+    this.mafia.control.event({
+      teamId: id,
+      host: "local",
+      actor: "lead",
+      type: "team.task-added",
+      data: { taskId: task.id },
+    });
+    this.write(team);
+    return team;
+  }
+
+  updateTask(id: string, taskId: string, patch: Partial<PipelineTask>): TeamStatus {
+    const team = this.get(id);
+    const task = team.tasks.find((item) => item.id === taskId);
+    if (!task) throw new Error(`Unknown task: ${taskId}`);
+    if (task.state === "running" && task.jobId && (patch.prompt || patch.harness || patch.model || patch.host)) {
+      this.mafia.controlJob(task.jobId, "redirect", {
+        prompt: patch.prompt,
+        harness: patch.harness,
+        model: patch.model,
+        host: patch.host,
+      });
+    }
+    Object.assign(task, patch);
+    validatePipeline({ name: team.name, tasks: team.tasks });
+    this.mafia.control.event({
+      teamId: id,
+      jobId: task.jobId,
+      host: task.host ?? "local",
+      actor: "lead",
+      type: "team.task-updated",
+      data: { taskId, patch },
+    });
+    this.write(team);
+    return team;
+  }
+
+  retryTask(id: string, taskId: string, replacement?: Partial<PipelineTask>): TeamStatus {
+    const team = this.get(id);
+    const task = team.tasks.find((item) => item.id === taskId);
+    if (!task) throw new Error(`Unknown task: ${taskId}`);
+    if (task.state === "running" && task.jobId) {
+      try {
+        this.mafia.cancel(task.jobId);
+      } catch {}
+    }
+    Object.assign(task, replacement ?? {});
+    task.state = "waiting";
+    task.jobId = undefined;
+    task.error = undefined;
+    if (team.state !== "running") {
+      team.state = "running";
+      team.completedAt = undefined;
+      spawnDetached("bun", [join(repoRoot, "src", "cli.ts"), "__team-run", id], repoRoot);
+    }
+    this.write(team);
+    return team;
+  }
+
+  recordDecision(id: string, input: Omit<DecisionRecord, "id" | "teamId" | "createdAt">): DecisionRecord {
+    const decision = this.mafia.control.decision({ ...input, teamId: id });
+    this.mafia.sendMessage({
+      teamId: id,
+      from: "decision-ledger",
+      type: "finding",
+      body: `Decision: ${decision.question}\nSelected: ${decision.selected}`,
+    });
+    return decision;
+  }
+
+  checkpoint(id: string, name = "manual"): TeamCheckpoint {
+    const team = this.get(id);
+    const branches = team.tasks.map((task) => {
+      const job = task.jobId ? this.mafia.store.get(task.jobId) : undefined;
+      let sha: string | undefined;
+      if (job?.worktree && existsSync(join(job.worktree, ".git"))) {
+        try {
+          sha = execFileSync("git", ["rev-parse", "HEAD"], { cwd: job.worktree, encoding: "utf8" }).trim();
+        } catch {}
+      }
+      return { taskId: task.id, jobId: task.jobId, branch: job?.branch, worktree: job?.worktree, sha };
+    });
+    const checkpoint: TeamCheckpoint = {
+      id: createId("checkpoint"),
+      teamId: id,
+      name,
+      createdAt: new Date().toISOString(),
+      team: structuredClone(team),
+      branches,
+      decisionIds: this.mafia.control.decisions(id).map((decision) => decision.id),
+    };
+    this.mafia.control.checkpoint(checkpoint);
+    return checkpoint;
+  }
+
+  restore(checkpointId: string): TeamStatus {
+    const checkpoint = this.mafia.control.getCheckpoint(checkpointId);
+    if (!checkpoint) throw new Error(`Unknown checkpoint: ${checkpointId}`);
+    const current = this.get(checkpoint.teamId);
+    for (const task of current.tasks) {
+      if (task.state === "running" && task.jobId) {
+        try {
+          this.mafia.cancel(task.jobId);
+        } catch {}
+      }
+    }
+    for (const branch of checkpoint.branches) {
+      if (!branch.sha || !branch.worktree) continue;
+      const job = branch.jobId ? this.mafia.store.get(branch.jobId) : undefined;
+      if (job?.host && job.host !== "local") continue;
+      if (!existsSync(branch.worktree)) continue;
+      try {
+        execFileSync("git", ["reset", "--hard", branch.sha], { cwd: branch.worktree, stdio: "ignore" });
+        execFileSync("git", ["clean", "-fd"], { cwd: branch.worktree, stdio: "ignore" });
+      } catch {}
+    }
+    const restored = structuredClone(checkpoint.team);
+    for (const task of restored.tasks) {
+      if (task.state !== "succeeded") {
+        task.state = "waiting";
+        task.jobId = undefined;
+        task.error = undefined;
+      }
+    }
+    restored.paused = true;
+    restored.state = "running";
+    restored.completedAt = undefined;
+    restored.checkpointId = checkpoint.id;
+    this.write(restored);
+    return restored;
+  }
+
   collect(id: string): string {
     const team = this.get(id);
     const jobs = new Map(this.mafia.reconcile().map((job) => [job.id, job]));
     const sections = team.tasks.map((task) => {
       if (!task.jobId) return `## ${task.id}\nstate: ${task.state}\n${task.error ?? ""}`.trim();
       const job = jobs.get(task.jobId) ?? this.mafia.get(task.jobId);
-      const result = job.result?.slice(-30000) || this.mafia.logs(job.id, 200);
+      const result = formatPacket(job);
       return [
         `## ${task.id} - ${task.title ?? task.prompt.slice(0, 60)}`,
         `state: ${task.state}`,
@@ -200,12 +483,12 @@ export class TeamService {
     }
   }
 
-  private workerPrompt(team: TeamStatus, task: TeamTaskStatus): string {
+  private workerPrompt(team: TeamStatus, task: TeamTaskStatus, contextPackPath?: string): string {
     const dependencies = (task.dependsOn ?? []).map((id) => {
       const dependency = team.tasks.find((candidate) => candidate.id === id);
       if (!dependency?.jobId) return "";
       const job = this.mafia.get(dependency.jobId);
-      return `### ${id}\n${job.result?.slice(-20000) || this.mafia.logs(job.id, 120)}`;
+      return `### ${id}\n${formatPacket(job)}`;
     }).filter(Boolean);
     return [
       `You are worker ${task.id} in Mafia team ${team.id}.`,
@@ -213,6 +496,14 @@ export class TeamService {
       `Your assignment: ${task.prompt}`,
       `Team roster:\n${team.tasks.map((item) => `- ${item.id}: ${item.title ?? item.prompt.slice(0, 100)}`).join("\n")}`,
       "",
+      `Use the Mafia communication command: mafia-agent.`,
+      `Read messages with: mafia-agent inbox --read`,
+      `Send a finding with: mafia-agent send --type finding --body "..."`,
+      `Send a blocker with: mafia-agent send --type blocker --body "..."`,
+      `Send a direct message with: mafia-agent send --to JOB_ID --body "..."`,
+      `Reference large outputs with: mafia-agent artifact PATH --description "..."`,
+      `Check the inbox after each major work step.`,
+      contextPackPath ? `Context pack: ${contextPackPath}` : "",
       "Work independently in your assigned workspace.",
       "Do not merge, push, or open a pull request unless the assignment requires it.",
       "Report concrete results, changed files, tests, blockers, and the next handoff.",
@@ -231,6 +522,15 @@ export class TeamService {
     const temp = `${path}.${process.pid}.tmp`;
     writeFileSync(temp, `${JSON.stringify(team, null, 2)}\n`);
     renameSync(temp, path);
+  }
+
+  private repoRules(repo?: string): string | undefined {
+    if (!repo) return undefined;
+    for (const name of ["AGENTS.md", "CLAUDE.md"]) {
+      const path = join(repo, name);
+      if (existsSync(path)) return readFileSync(path, "utf8").slice(0, 40_000);
+    }
+    return undefined;
   }
 }
 
