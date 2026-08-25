@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { agentDisplayName, modelDisplayName } from "../src/agent-display";
 import { formatAgentDashboard, formatAgentWidget, formatVpsDashboard, formatVpsTelemetry, formatVpsWidget } from "../src/format";
 import type { VpsTelemetry } from "../src/types";
 
@@ -59,6 +60,19 @@ const telemetry: VpsTelemetry = {
 };
 
 describe("VPS telemetry", () => {
+  test("shows harness and model as one subagent identity", () => {
+    expect(agentDisplayName({ harness: "codex", model: "openai-codex/gpt-5.6-luna-pro:high" }))
+      .toBe("Codex - GPT-5.6 Luna Pro");
+    expect(agentDisplayName({ harness: "claude", model: "claude-opus-5" }))
+      .toBe("Claude Code - Opus 5");
+    expect(agentDisplayName({ harness: "kimi", model: "kimi-k3" }))
+      .toBe("Kimi Code - K3");
+    expect(agentDisplayName({ harness: "cline", model: "k3" }))
+      .toBe("Cline - K3");
+    expect(modelDisplayName("openrouter/nvidia/nemotron-3-ultra-free"))
+      .toBe("Nemotron 3 Ultra");
+  });
+
   test("formats one compact worker line and a detailed hub", () => {
     const jobs = telemetry.jobs.recent.map((job) => ({
       ...job,
@@ -73,6 +87,7 @@ describe("VPS telemetry", () => {
     }));
     expect(formatAgentWidget(jobs)).toContain("Agents 1 active | VPS 1");
     expect(formatAgentDashboard(jobs, "active")).toContain("Implement API");
+    expect(formatAgentDashboard(jobs, "active")).toContain("Codex - GPT-5.5");
   });
 
   test("formats the operational summary and relevant processes", () => {

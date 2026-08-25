@@ -165,6 +165,14 @@ function contentText(content) {
     .join("\n");
 }
 
+function servedModel(event) {
+  const value = event?.message?.model
+    ?? event?.item?.model
+    ?? event?.response?.model
+    ?? event?.model;
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
 function extractResult(raw) {
   let result = "";
   for (const line of raw.split("\n")) {
@@ -283,6 +291,7 @@ try {
 
   const output = [];
   let outputBytes = 0;
+  let observedModel = spec.model;
   child = spawn(command, args, {
     cwd,
     env: {
@@ -313,7 +322,14 @@ try {
       appendFileSync(logPath, text);
       for (const line of text.split("\n")) {
         try {
-          collectUsage(JSON.parse(line));
+          const payload = JSON.parse(line);
+          collectUsage(payload);
+          const model = servedModel(payload);
+          if (model && model !== observedModel) {
+            observedModel = model;
+            writeStatus({ model });
+            event("worker.model", { model });
+          }
         } catch {}
       }
       output.push(text);

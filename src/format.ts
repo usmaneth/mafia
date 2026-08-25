@@ -1,4 +1,5 @@
 import { budgetState } from "./budget";
+import { agentDisplayName, isActiveAgent } from "./agent-display";
 import type { JobStatus, MafiaMessage, PrOperationalState, PrTelemetry, TeamStatus, VpsTelemetry } from "./types";
 
 function age(value: string): string {
@@ -67,7 +68,7 @@ export function formatTeam(team: TeamStatus): string {
 export type AgentDashboardFilter = "all" | "active" | "failed" | "vps" | "local";
 
 export function formatAgentWidget(jobs: JobStatus[]): string {
-  const active = jobs.filter((job) => ["queued", "starting", "running"].includes(job.state));
+  const active = jobs.filter(isActiveAgent);
   const failed = jobs.filter((job) =>
     job.state === "failed" && Date.now() - new Date(job.updatedAt).getTime() < 60 * 60 * 1000);
   const remote = active.filter((job) => job.host !== "local").length;
@@ -76,15 +77,14 @@ export function formatAgentWidget(jobs: JobStatus[]): string {
 }
 
 export function formatAgentDashboard(jobs: JobStatus[], filter: AgentDashboardFilter = "all"): string {
-  const activeStates = new Set(["queued", "starting", "running"]);
   const selected = jobs.filter((job) => {
-    if (filter === "active") return activeStates.has(job.state);
+    if (filter === "active") return isActiveAgent(job);
     if (filter === "failed") return job.state === "failed";
     if (filter === "vps") return job.host !== "local";
     if (filter === "local") return job.host === "local";
     return true;
   });
-  const active = jobs.filter((job) => activeStates.has(job.state));
+  const active = jobs.filter(isActiveAgent);
   const heartbeat = (job: JobStatus): string => job.heartbeatAt ? age(job.heartbeatAt) : age(job.updatedAt);
   const lines = [
     "MAFIA AGENT HUB",
@@ -93,16 +93,16 @@ export function formatAgentDashboard(jobs: JobStatus[], filter: AgentDashboardFi
     "== ACTIVE WORK ==",
     ...(active.length
       ? active.slice(0, 12).map((job) =>
-        `${fit(job.host, 7)} ${fit(job.harness, 10)} ${fit(job.model ?? "default", 36)} ` +
-        `${fit(heartbeat(job), 6)} ${job.title}`)
+        `${fit(agentDisplayName(job), 34)} ${fit(job.host.toUpperCase(), 7)} ` +
+        `${fit(job.state, 10)} ${fit(heartbeat(job), 6)} ${job.title}`)
       : ["No agents run now."]),
     "",
     `== AGENTS - ${filter.toUpperCase()} (${selected.length}) ==`,
-    `${fit("STATE", 10)} ${fit("HOST", 7)} ${fit("HARNESS", 10)} ${fit("MODEL", 36)} ${fit("BEAT", 6)} TASK`,
+    `${fit("SUBAGENT", 34)} ${fit("HOST", 7)} ${fit("STATE", 10)} ${fit("BEAT", 6)} TASK`,
   ];
   for (const job of selected) {
     lines.push(
-      `${fit(job.state, 10)} ${fit(job.host, 7)} ${fit(job.harness, 10)} ${fit(job.model ?? "default", 36)} ` +
+      `${fit(agentDisplayName(job), 34)} ${fit(job.host.toUpperCase(), 7)} ${fit(job.state, 10)} ` +
       `${fit(heartbeat(job), 6)} ${job.title}${job.error ? ` | ${job.error}` : ""}`,
     );
   }

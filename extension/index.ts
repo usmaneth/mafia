@@ -14,6 +14,7 @@ import { showVpsDashboard } from "./vps-dashboard";
 import { readPrTelemetry, refreshPrTelemetry } from "../src/pr";
 import { showPrDashboard } from "./pr-dashboard";
 import { showAgentDashboard } from "./agent-dashboard";
+import { NativeAgentBridge } from "./native-agent-bridge";
 
 export function sessionUsesVibeMode(entries: readonly unknown[]): boolean {
   let mode = "none";
@@ -26,6 +27,7 @@ export function sessionUsesVibeMode(entries: readonly unknown[]): boolean {
 
 export default function mafiaExtension(pi: ExtensionAPI) {
   const z = pi.zod;
+  const nativeAgents = new NativeAgentBridge(pi.pi.AgentRegistry.global());
   const designCheckpointPrompt = `
 MAFIA DESIGN CHECKPOINT POLICY:
 - This session uses yolo tool approval. Execute read, write, and command tools without permission prompts.
@@ -635,6 +637,7 @@ MAFIA DESIGN CHECKPOINT POLICY:
           lastVps = vps;
         }
         const agents = formatAgentWidget(mafia.listCached(500));
+        nativeAgents.sync(mafia.listCached(500));
         if (agents !== lastAgents) {
           ctx.ui.setStatus("mafia-agents", agents);
           lastAgents = agents;
