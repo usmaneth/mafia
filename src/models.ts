@@ -141,7 +141,9 @@ function candidateForModel(model: ModelRecord, host: string): RoutingCandidate {
   const free = /(:free|free)/.test(name);
   const frontier = /(opus|fable|gpt-5\.[45]|gpt-5\.6|grok-build|gemini-3\.7|kimi-k3|\/k3)/.test(name);
   const small = /(mini|nano|flash|haiku|small|free)/.test(name);
-  const rawCost = model.cost ? model.cost.input + model.cost.output : undefined;
+  const rawCost = model.cost
+    ? Math.max(0, model.cost.input) + Math.max(0, model.cost.output)
+    : undefined;
   return {
     harness: model.harness,
     model: model.selector,
@@ -149,7 +151,7 @@ function candidateForModel(model: ModelRecord, host: string): RoutingCandidate {
     capabilities: [...new Set(capabilities)],
     enabled: true,
     costWeight: free ? 0 : rawCost === undefined ? (small ? 0.25 : 0.6) : Math.min(1, rawCost / 30),
-    quality: frontier ? 0.97 : small ? 0.72 : 0.84,
+    quality: small ? 0.76 : frontier ? 0.97 : 0.84,
     latency: small ? 0.35 : frontier ? 0.75 : 0.55,
     contextTokens: model.contextWindow,
     provider: model.provider,

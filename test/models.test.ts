@@ -19,4 +19,14 @@ describe("model catalog", () => {
     expect(candidates).toHaveLength(2);
     expect(candidates.every((item) => item.model === "openai/gpt-5.5")).toBe(true);
   });
+
+  test("does not treat negative provider price sentinels as a discount", () => {
+    const models = parseOmpModels(JSON.stringify({ models: [{
+      provider: "openrouter",
+      id: "auto",
+      selector: "openrouter/auto",
+      cost: { input: -1, output: -1 },
+    }] }));
+    expect(catalogCandidates({ generatedAt: "", models, sources: [] }, ["local"])[0].costWeight).toBe(0);
+  });
 });
