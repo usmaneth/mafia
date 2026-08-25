@@ -1,7 +1,7 @@
 import type { ExtensionAPI, ExtensionCommandContext } from "@oh-my-pi/pi-coding-agent";
 import { spawn } from "node:child_process";
 import { join } from "node:path";
-import { formatHub, formatJobs, formatMessages, formatTeam, formatTeams, formatVpsTelemetry, formatVpsWidget } from "../src/format";
+import { formatHub, formatJobs, formatMessages, formatPrDashboard, formatTeam, formatTeams, formatVpsTelemetry, formatVpsWidget } from "../src/format";
 import { protocolSpec } from "../src/protocols";
 import { routeTask } from "../src/router";
 import { loadConfig, repoRoot } from "../src/config";
@@ -11,6 +11,8 @@ import { catalogCandidates, filterCatalog, ModelCatalogService } from "../src/mo
 import { recommendParallelism } from "../src/scale";
 import { readVpsTelemetry, refreshVpsTelemetry } from "../src/telemetry";
 import { showVpsDashboard } from "./vps-dashboard";
+import { readPrTelemetry, refreshPrTelemetry } from "../src/pr";
+import { showPrDashboard } from "./pr-dashboard";
 
 export function sessionUsesVibeMode(entries: readonly unknown[]): boolean {
   let mode = "none";
@@ -404,6 +406,25 @@ MAFIA DESIGN CHECKPOINT POLICY:
   });
 
   pi.registerTool({
+    name: "mafia_pr_status",
+    label: "Mafia PR Status",
+    description: "Show Usman's pull requests, review work, CI state, conflicts, and merge readiness.",
+    parameters: z.object({
+      refresh: z.boolean().optional().default(false),
+    }),
+    async execute(_toolCallId, rawParams) {
+      const params = rawParams as any;
+      const value = params.refresh
+        ? refreshPrTelemetry(true)
+        : readPrTelemetry() ?? refreshPrTelemetry(true);
+      return {
+        content: [{ type: "text", text: formatPrDashboard(value) }],
+        details: value,
+      };
+    },
+  });
+
+  pi.registerTool({
     name: "mafia_job_logs",
     label: "Mafia Job Logs",
     description: "Read the latest output from one local or VPS worker.",
@@ -526,6 +547,8 @@ MAFIA DESIGN CHECKPOINT POLICY:
           ctx.ui.notify(formatMessages(new MafiaService().control.messages({ teamId, limit: 30 })), "info");
         } else if (text === "vps" || text.startsWith("vps ")) {
           await showVpsDashboard(ctx, { allProcesses: text.includes("--all") });
+        } else if (text === "prs") {
+          await showPrDashboard(ctx);
         } else {
           const teams = formatTeams(new TeamService().list(10));
           const jobs = formatJobs(new MafiaService().listCached(20));
@@ -557,6 +580,13 @@ MAFIA DESIGN CHECKPOINT POLICY:
     description: "Open the Mafia VPS operations dashboard",
     handler: async (args, ctx) => {
       await showVpsDashboard(ctx, { allProcesses: args.includes("--all") });
+    },
+  });
+
+  pi.registerCommand("prs", {
+    description: "Open the Mafia PR automation dashboard",
+    handler: async (_args, ctx) => {
+      await showPrDashboard(ctx);
     },
   });
 

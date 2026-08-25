@@ -1,0 +1,10 @@
+[Unit]
+Description=Check verified pull requests every three minutes
+
+[Timer]
+OnBootSec=2m
+OnUnitInactiveSec=3m
+Persistent=true
+
+[Install]
+WantedBy=timers.target

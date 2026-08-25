@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 import { readFileSync } from "node:fs";
 import { ensureConfig, loadConfig, resolveHost } from "./config";
-import { formatHub, formatJobs, formatMessages, formatTeam, formatTeams } from "./format";
+import { formatHub, formatJobs, formatMessages, formatPrDashboard, formatTeam, formatTeams } from "./format";
 import { isHarnessName } from "./harnesses";
 import { buildOmpArgs } from "./launch";
 import { installRemote } from "./remote";
@@ -15,6 +15,7 @@ import { installUpdateAutomation, updateMafia } from "./updater";
 import { readVpsTelemetry, refreshVpsTelemetry } from "./telemetry";
 import { formatVpsTelemetry } from "./format";
 import { codexOAuthEnvironment } from "./process";
+import { installPrAutomation, readPrTelemetry, refreshPrTelemetry, runPrAutomation } from "./pr";
 import { teamProtocolNames, type JobState, type MessageType, type PipelineSpec, type TeamProtocolName } from "./types";
 
 function option(args: string[], name: string): string | undefined {
@@ -71,6 +72,7 @@ usage:
   mafia update [--push] [--deploy]
   mafia install-updater
   mafia vps [--refresh] [--all] [--json]
+  mafia prs [--refresh] [--json] [--shepherd|--merge|--install]
   mafia budget TEAM
   mafia protocol start NAME --goal TEXT [--repo PATH]
   mafia sync [--discover]
@@ -89,7 +91,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     "help", "-h", "--help", "jobs", "status", "watch", "dispatch", "logs", "cancel", "handoff", "compare",
     "team", "hub", "message", "decisions", "decision", "events", "route", "budget", "protocol",
     "sync", "hosts", "install-remote", "eval", "__team-run", "doctor", "models", "scale", "update", "install-updater",
-    "vps", "__vps-refresh",
+    "vps", "__vps-refresh", "prs", "__prs-refresh",
   ]);
   if (!command || command === "shell" || command === "run" || !controlCommands.has(command)) {
     const { spawnSync } = await import("node:child_process");
@@ -308,6 +310,19 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     }
     case "__vps-refresh":
       refreshVpsTelemetry(has(args, "--force"));
+      return;
+    case "prs": {
+      if (has(args, "--install")) installPrAutomation();
+      if (has(args, "--shepherd")) runPrAutomation("shepherd");
+      if (has(args, "--merge")) runPrAutomation("merge");
+      const value = has(args, "--refresh")
+        ? refreshPrTelemetry(true)
+        : readPrTelemetry() ?? refreshPrTelemetry(true);
+      has(args, "--json") ? printJson(value) : console.log(formatPrDashboard(value));
+      return;
+    }
+    case "__prs-refresh":
+      refreshPrTelemetry(has(args, "--force"));
       return;
     case "budget": {
       const team = teams.get(required(args[0], "The team ID is required."));

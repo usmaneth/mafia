@@ -1,0 +1,14 @@
+[Unit]
+Description=Fix review threads and CI on Usman pull requests
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=usman
+Environment=HOME=/home/usman
+Environment=PATH=/home/usman/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/home/usman/.local/bin/pr-shepherd.sh
+TimeoutStartSec=2h
+MemoryMax=4G
+KillMode=control-group

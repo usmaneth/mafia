@@ -30,6 +30,10 @@ function units(): VpsUnit[] {
     "provider-auth-monitor.timer",
     "provider-auth-monitor.service",
     "pr-watch.service",
+    "pr-shepherd.timer",
+    "pr-shepherd.service",
+    "pr-automerge.timer",
+    "pr-automerge.service",
     "vault-daemon.service",
     "herdr.service",
   ];

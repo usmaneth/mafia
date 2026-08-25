@@ -1,0 +1,10 @@
+[Unit]
+Description=Check Usman pull requests every twelve minutes
+
+[Timer]
+OnBootSec=4m
+OnUnitInactiveSec=12m
+Persistent=true
+
+[Install]
+WantedBy=timers.target

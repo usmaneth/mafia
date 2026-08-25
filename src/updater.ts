@@ -5,6 +5,7 @@ import { spawnSync } from "node:child_process";
 import { loadConfig, repoRoot } from "./config";
 import { ModelCatalogService } from "./models";
 import { installRemote } from "./remote";
+import { installPrAutomation } from "./pr";
 
 interface UpdateResult {
   target: string;
@@ -132,6 +133,18 @@ export function updateMafia(options: { push?: boolean; deploy?: boolean } = {}):
           `${repoRoot}/`, `${host.target!}:/home/usman/mafia/`,
         ]);
         results.push({ target: host.name, status: sync.ok ? "ok" : "error", detail: sync.output || "Worker and source deployed." });
+        if (sync.ok && host.name === "vps") {
+          try {
+            installPrAutomation();
+            results.push({ target: "pr-automation", status: "ok", detail: "Installed the PR shepherd and safe merge timers." });
+          } catch (error) {
+            results.push({
+              target: "pr-automation",
+              status: "error",
+              detail: error instanceof Error ? error.message : String(error),
+            });
+          }
+        }
       } catch (error) {
         results.push({ target: host.name, status: "error", detail: error instanceof Error ? error.message : String(error) });
       }

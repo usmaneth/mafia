@@ -1,0 +1,16 @@
+[Unit]
+Description=Queue verified Usman pull requests for auto-merge
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=usman
+Environment=HOME=/home/usman
+Environment=PATH=/home/usman/.local/bin:/usr/local/bin:/usr/bin:/bin
+WorkingDirectory=/home/usman/pr-watch
+ExecStart=/usr/bin/python3 /home/usman/pr-watch/automerge.py
+TimeoutStartSec=10m
+MemoryMax=1G
+StandardOutput=append:/home/usman/pr-watch/automerge.log
+StandardError=append:/home/usman/pr-watch/automerge.log

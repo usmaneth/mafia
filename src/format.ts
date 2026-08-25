@@ -1,5 +1,5 @@
 import { budgetState } from "./budget";
-import type { JobStatus, MafiaMessage, TeamStatus, VpsTelemetry } from "./types";
+import type { JobStatus, MafiaMessage, PrOperationalState, PrTelemetry, TeamStatus, VpsTelemetry } from "./types";
 
 function age(value: string): string {
   const seconds = Math.max(0, Math.floor((Date.now() - new Date(value).getTime()) / 1000));
@@ -127,6 +127,64 @@ export function formatVpsWidget(value: VpsTelemetry): string[] {
   return [`VPS ${value.host} online ${value.latencyMs}ms | load ${load} | mem ${memory} | disk ${disk}${stale}`];
 }
 
+export function formatPrWidget(value: PrTelemetry): string {
+  if (!value.reachable) return `PR desk offline | ${value.error ?? "VPS check failed"}`;
+  const parts = [
+    `${value.totals.open} open`,
+    value.totals["needs-you"] ? `${value.totals["needs-you"]} need you` : "",
+    value.totals.fixing ? `${value.totals.fixing} fixing` : "",
+    value.totals["ci-failing"] ? `${value.totals["ci-failing"]} CI failing` : "",
+    value.totals.ready ? `${value.totals.ready} ready` : "",
+    value.totals.queued ? `${value.totals.queued} queued` : "",
+  ].filter(Boolean);
+  return `PRs ${parts.join(" | ")}`;
+}
+
+export function formatPrDashboard(
+  value: PrTelemetry,
+  filter: PrOperationalState | "all" = "all",
+): string {
+  if (!value.reachable) {
+    return [
+      "MAFIA PR DESK",
+      "",
+      `VPS check failed: ${value.error ?? "unknown error"}`,
+    ].join("\n");
+  }
+  const selected = filter === "all" ? value.prs : value.prs.filter((pr) => pr.state === filter);
+  const unhealthy = value.units.filter((unit) =>
+    unit.active === "failed"
+    || unit.sub === "failed"
+    || (unit.name.endsWith(".timer") && unit.active !== "active"));
+  const lines = [
+    "MAFIA PR DESK",
+    `Snapshot ${telemetryAge(value.generatedAt)} ago | VPS ${value.latencyMs}ms | view ${filter}`,
+    "",
+    "== QUEUE ==",
+    `Open ${value.totals.open} | Need you ${value.totals["needs-you"]} | Fixing ${value.totals.fixing} | ` +
+      `Conflicts ${value.totals.conflict} | CI fail ${value.totals["ci-failing"]} | CI pending ${value.totals["ci-pending"]}`,
+    `Ready ${value.totals.ready} | Queued ${value.totals.queued} | Awaiting review ${value.totals["awaiting-review"]}`,
+    "",
+    "== AUTOMATION ==",
+    ...(unhealthy.length ? unhealthy.map((item) => `! ${item.name} is ${item.active}/${item.sub}`) : ["All PR automation units are healthy."]),
+    `${fit("UNIT", 28)} ${fit("ACTIVE", 10)} ${fit("SUB", 12)} ${fit("RESULT", 10)} LAST RUN`,
+    ...value.units.map((item) =>
+      `${fit(item.name, 28)} ${fit(item.active, 10)} ${fit(item.sub, 12)} ${fit(item.result ?? "-", 10)} ${item.lastRun ?? "-"}`),
+    "",
+    `== PULL REQUESTS - ${filter.toUpperCase()} (${selected.length}) ==`,
+    `${fit("STATE", 16)} ${fit("PR", 37)} ${fit("THREADS", 8)} ${fit("CI", 9)} ${fit("REVIEW", 13)} TITLE`,
+  ];
+  for (const pr of selected) {
+    const name = `${pr.repo}#${pr.number}`;
+    lines.push(
+      `${fit(pr.state, 16)} ${fit(name, 37)} ${fit(String(pr.unresolvedThreads), 8)} ` +
+      `${fit(pr.checks.toLowerCase(), 9)} ${fit(pr.reviewDecision.toLowerCase(), 13)} ${pr.title}`,
+    );
+  }
+  if (!selected.length) lines.push("No pull requests match this view.");
+  return lines.join("\n");
+}
+
 function duration(seconds?: number): string {
   if (seconds === undefined) return "-";
   if (seconds < 60) return `${Math.floor(seconds)}s`;
@@ -157,7 +215,12 @@ export function formatVpsDashboard(value: VpsTelemetry, options: { allProcesses?
     return `${harness}: ${source.count > 0 ? `${source.count} models` : "EMPTY"}`;
   });
   const unitFailures = value.units.filter((unit) => {
-    const oneshot = ["mafia-update.service", "provider-auth-monitor.service"].includes(unit.name);
+    const oneshot = [
+      "mafia-update.service",
+      "provider-auth-monitor.service",
+      "pr-shepherd.service",
+      "pr-automerge.service",
+    ].includes(unit.name);
     const shouldBeActive = unit.name.endsWith(".timer") || (unit.name.endsWith(".service") && !oneshot);
     return unit.active === "failed"
       || unit.sub === "failed"

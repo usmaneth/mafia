@@ -370,6 +370,53 @@ export interface VpsTelemetry {
   processes: VpsProcess[];
 }
 
+export type PrOperationalState =
+  | "needs-you"
+  | "fixing"
+  | "conflict"
+  | "ci-failing"
+  | "ci-pending"
+  | "ready"
+  | "queued"
+  | "awaiting-review"
+  | "watching";
+
+export interface PrStatus {
+  repo: string;
+  number: number;
+  title: string;
+  url: string;
+  updatedAt: string;
+  headSha: string;
+  mergeable: string;
+  mergeStateStatus: string;
+  reviewDecision: string;
+  checks: string;
+  unresolvedThreads: number;
+  botThreads: number;
+  sweeps: number;
+  autoMerge: boolean;
+  state: PrOperationalState;
+}
+
+export interface PrAutomationUnit {
+  name: string;
+  active: string;
+  sub: string;
+  result?: string;
+  lastRun?: string;
+}
+
+export interface PrTelemetry {
+  generatedAt: string;
+  reachable: boolean;
+  latencyMs: number;
+  error?: string;
+  totals: Record<PrOperationalState | "open", number>;
+  units: PrAutomationUnit[];
+  prs: PrStatus[];
+}
+
 export interface RoutingConfig {
   candidates: RoutingCandidate[];
   fallbackOrder?: HarnessName[];
