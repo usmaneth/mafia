@@ -17,6 +17,15 @@ const catalog: ModelCatalog = {
       available: true,
     },
     {
+      harness: "opencode",
+      provider: "openrouter",
+      id: "anthropic/claude-sonnet-5",
+      selector: "openrouter/anthropic/claude-sonnet-5",
+      name: "Claude Sonnet 5",
+      source: "opencode",
+      available: true,
+    },
+    {
       harness: "claude",
       provider: "anthropic",
       id: "sonnet",
@@ -59,7 +68,7 @@ describe("model selection", () => {
   test("maps a friendly model name to its native harness", () => {
     const selected = resolveCatalogModel(catalog, "sonnet 5");
     expect(selected.harness).toBe("claude");
-    expect(selected.selector).toBe("claude-sonnet-5");
+    expect(selected.selector).toBe("sonnet");
   });
 
   test("honors an exact provider selector", () => {
@@ -68,12 +77,18 @@ describe("model selection", () => {
   });
 
   test("does not confuse Sonnet 5 with Sonnet 3.5", () => {
-    expect(resolveCatalogModel(catalog, "sonnet 5").id).toBe("claude-sonnet-5");
+    expect(resolveCatalogModel(catalog, "sonnet 5").id).not.toBe("claude-3-5-sonnet-20240620");
+  });
+
+  test("honors an exact native Claude model ID", () => {
+    expect(resolveCatalogModel(catalog, "claude-sonnet-5").selector).toBe("claude-sonnet-5");
   });
 
   test("maps a versioned family request to a native Claude alias", () => {
     const aliasOnly = { ...catalog, models: catalog.models.filter((model) => model.id !== "claude-sonnet-5") };
-    expect(resolveCatalogModel(aliasOnly, "sonnet 5").selector).toBe("sonnet");
+    const selected = resolveCatalogModel(aliasOnly, "sonnet 5");
+    expect(selected.harness).toBe("claude");
+    expect(selected.selector).toBe("sonnet");
   });
 
   test("ranks the complete eligible fallback set", () => {

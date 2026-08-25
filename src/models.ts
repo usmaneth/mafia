@@ -229,12 +229,13 @@ function modelMatchScore(model: ModelRecord, requested: string): number {
   const name = model.name.toLowerCase();
   if (selector === raw) return 110;
   if (providerId === raw) return 100;
-  if (id === raw || name === raw) return 95;
+  if (id === raw) return 109;
+  if (name === raw) return 95;
   const normalizedSelector = normalizedModelName(model.selector);
   const normalizedName = normalizedModelName(model.name);
   if (normalizedSelector === normalized || normalizedName === normalized) return 94;
   if (normalizedSelector.endsWith(normalized) || normalizedName.endsWith(normalized)) return 92;
-  if (["sonnet", "opus", "haiku"].includes(id) && normalized.includes(id)) return 91;
+  if (["sonnet", "opus", "haiku"].includes(id) && normalized.includes(id)) return 96;
   const words = normalized.split(" ").filter(Boolean);
   const haystack = normalizedModelName(`${model.selector} ${model.name} ${model.provider}`);
   if (words.length && words.every((word) => haystack.includes(word))) return 70 + Math.min(10, words.length);
