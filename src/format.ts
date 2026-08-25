@@ -162,11 +162,13 @@ export function formatVpsWidget(value: VpsTelemetry): string[] {
   const processFilter = /(mafia|omp|claude|codex|kimi|cline|opencode|hermes|herdr|vault|watch|agent|proxy)/i;
   const relevantProcesses = value.processes.filter((process) => processFilter.test(process.command)).length;
   const latestProblem = value.jobs.recent.find((job) => job.state === "failed" || job.state === "lost");
+  const widgetUnits = value.units.filter((unit) =>
+    !["mafia-update.service", "provider-auth-monitor.service"].includes(unit.name));
   const lines = [
     `VPS ${value.host} online ${value.latencyMs}ms | load ${load} | mem ${memory} | disk ${disk}${stale}`,
     `workers ${value.jobs.running} run ${value.jobs.failed} fail ${value.jobs.lost} lost | models ${value.models.total}`,
     `route ${fallback.join(" ") || "-"}`,
-    `watch ${value.units.map((unit) => `${shortUnitName(unit.name)}:${shortUnitState(unit.active)}`).join(" ") || "-"}`,
+    `watch ${widgetUnits.map((unit) => `${shortUnitName(unit.name)}:${shortUnitState(unit.active)}`).join(" ") || "-"}`,
     `timers ${timers || "-"} | relevant processes ${relevantProcesses}`,
   ];
   if (latestProblem) {

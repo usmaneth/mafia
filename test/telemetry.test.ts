@@ -74,15 +74,30 @@ describe("VPS telemetry", () => {
   });
 
   test("formats a stable compact widget", async () => {
-    const first = formatVpsWidget(telemetry);
+    const widgetTelemetry = {
+      ...telemetry,
+      units: [
+        ...telemetry.units,
+        {
+          name: "mafia-update.service",
+          active: "inactive",
+          sub: "dead",
+          description: "Refresh Mafia",
+          result: "success",
+          execStatus: 0,
+        },
+      ],
+    };
+    const first = formatVpsWidget(widgetTelemetry);
     await Bun.sleep(20);
-    const second = formatVpsWidget(telemetry);
+    const second = formatVpsWidget(widgetTelemetry);
 
     expect(first).toEqual(second);
     expect(first.length).toBeLessThanOrEqual(6);
     expect(Math.max(...first.map((line) => line.length))).toBeLessThanOrEqual(80);
     expect(first.join("\n")).toContain("claude:?");
     expect(first.join("\n")).toContain("watch update:ok");
+    expect(first.join("\n")).not.toContain("update:off");
   });
 
   test("formats the full operations dashboard", () => {

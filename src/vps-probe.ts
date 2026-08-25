@@ -36,7 +36,8 @@ function units(): VpsUnit[] {
   const discovered = command("systemctl", ["list-unit-files", "--no-legend", "--no-pager"])
     .split("\n")
     .map((line) => line.trim().split(/\s+/, 1)[0])
-    .filter((name) => /\.(service|timer)$/.test(name) && /(mafia|watch|monitor|vault|herdr)/i.test(name));
+    .filter((name) =>
+      /^(mafia|provider-auth|pr-watch|vault|herdr|claude|codex|cline|kimi|opencode|omp)[-.].*\.(service|timer)$/i.test(name));
   const names = [...new Set([...required, ...discovered])];
   return names.map((name) => {
     const raw = command("systemctl", [
