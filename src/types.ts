@@ -94,6 +94,8 @@ export interface PipelineTask {
   timeoutSeconds?: number;
   capability?: TaskCapability;
   preferredModels?: string[];
+  allowFallback?: boolean;
+  fallbackRoutes?: RouteTarget[];
   expectedValue?: number;
 }
 
@@ -371,6 +373,12 @@ export interface VpsTelemetry {
 export interface RoutingConfig {
   candidates: RoutingCandidate[];
   fallbackOrder?: HarnessName[];
+}
+
+export interface RouteTarget {
+  harness: HarnessName;
+  model?: string;
+  host: string;
 }
 
 export interface RouteDecision {

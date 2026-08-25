@@ -12,6 +12,15 @@ import { recommendParallelism } from "../src/scale";
 import { readVpsTelemetry, refreshVpsTelemetry } from "../src/telemetry";
 import { showVpsDashboard } from "./vps-dashboard";
 
+export function sessionUsesVibeMode(entries: readonly unknown[]): boolean {
+  let mode = "none";
+  for (const entry of entries) {
+    if (!entry || typeof entry !== "object" || (entry as any).type !== "mode_change") continue;
+    mode = typeof (entry as any).mode === "string" ? (entry as any).mode : mode;
+  }
+  return mode === "vibe";
+}
+
 export default function mafiaExtension(pi: ExtensionAPI) {
   const z = pi.zod;
   const designCheckpointPrompt = `
@@ -28,6 +37,16 @@ MAFIA DESIGN CHECKPOINT POLICY:
   pi.on("before_agent_start", async (event) => ({
     systemPrompt: [...event.systemPrompt, designCheckpointPrompt],
   }));
+
+  pi.on("input", async (event, ctx) => {
+    if (!/^\/vibe(?:\s|$)/i.test(event.text.trim())) return;
+    if (sessionUsesVibeMode(ctx.sessionManager.getBranch())) return;
+    ctx.ui.notify(
+      "Mafia does not use Vibe mode. Use the normal lead, mafia_dispatch, or mafia_team_start.",
+      "warning",
+    );
+    return { handled: true };
+  });
 
   pi.registerTool({
     name: "mafia_team_start",
@@ -58,6 +77,7 @@ MAFIA DESIGN CHECKPOINT POLICY:
         timeoutSeconds: z.number().int().min(30).max(86400).optional().default(3600),
         capability: z.enum(["architecture", "implementation", "research", "review", "security", "testing", "synthesis", "general"]).optional(),
         preferredModels: z.array(z.string()).optional(),
+        allowFallback: z.boolean().optional().default(true),
         expectedValue: z.number().min(0).max(1).optional(),
       })).min(1).max(128),
       budget: z.object({
@@ -301,22 +321,40 @@ MAFIA DESIGN CHECKPOINT POLICY:
   pi.registerTool({
     name: "mafia_dispatch",
     label: "Dispatch Mafia Worker",
-    description: "Dispatch one real harness worker for a focused assignment.",
+    description:
+      "Start one full coding agent. Set any catalog model by name or selector, or omit model and harness for adaptive routing.",
     parameters: z.object({
       prompt: z.string(),
       title: z.string().optional(),
-      harness: z.enum(["claude", "codex", "kimi", "cline", "opencode", "omp"]),
-      host: z.string().optional().default("local"),
+      harness: z.enum(["claude", "codex", "kimi", "cline", "opencode", "omp"]).optional(),
+      host: z.string().optional(),
       repo: z.string().optional(),
       cwd: z.string().optional(),
-      model: z.string().optional(),
+      model: z.string().optional().describe("Any model name, ID, or provider/model selector from the Mafia catalog."),
+      capability: z.enum(["architecture", "implementation", "research", "review", "security", "testing", "synthesis", "general"]).optional(),
       baseRef: z.string().optional(),
       isolate: z.boolean().optional().default(true),
       timeoutSeconds: z.number().int().min(30).max(86400).optional().default(3600),
     }),
     async execute(_toolCallId, rawParams) {
       const params = rawParams as any;
-      const job = new MafiaService().dispatch(params);
+      const mafia = new MafiaService();
+      let route;
+      if (!params.harness && !params.model) {
+        const selected = routeTask(
+          mafia.config,
+          { capability: params.capability ?? "general", host: params.host },
+          mafia.store.routingHistory(),
+          catalogCandidates(mafia.models.cached() ?? mafia.models.discover(), Object.keys(mafia.config.hosts)),
+        );
+        route = {
+          harness: selected.harness,
+          model: selected.model,
+          host: selected.host,
+        };
+      }
+      const { capability: _capability, ...dispatch } = params;
+      const job = mafia.dispatch({ ...dispatch, ...route });
       return {
         content: [{ type: "text", text: `Started ${job.id}: ${job.harness}@${job.host} (${job.state})` }],
         details: { id: job.id, state: job.state, harness: job.harness, host: job.host },

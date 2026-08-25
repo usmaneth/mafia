@@ -19,18 +19,35 @@ export function routeTask(
   history: Map<string, UsageMetrics> = new Map(),
   discovered?: RoutingCandidate[],
 ): RouteDecision {
+  return rankTaskRoutes(config, input, history, discovered)[0] ?? {
+    harness: config.defaultHarness,
+    host: input.host ?? config.defaultHost,
+    score: 0,
+    reasons: ["default route"],
+  };
+}
+
+export function rankTaskRoutes(
+  config: MafiaConfig,
+  input: RouteInput,
+  history: Map<string, UsageMetrics> = new Map(),
+  discovered?: RoutingCandidate[],
+): RouteDecision[] {
   const candidates = (discovered?.length ? discovered : config.routing?.candidates ?? defaultCandidates()).filter((candidate) => {
     if (!candidate.enabled) return false;
     if (input.host && candidate.host !== input.host) return false;
     if (input.preferredModels?.length && candidate.model && !input.preferredModels.includes(candidate.model)) return false;
     return candidate.capabilities.includes(input.capability) || candidate.capabilities.includes("general");
   });
-  if (!candidates.length) {
-    return { harness: config.defaultHarness, host: input.host ?? config.defaultHost, score: 0, reasons: ["default route"] };
-  }
   const scored = candidates.map((candidate) => scoreCandidate(candidate, history, input.downgrade ?? false));
   scored.sort((a, b) => b.score - a.score);
-  return scored[0];
+  const seen = new Set<string>();
+  return scored.filter((route) => {
+    const key = `${route.harness}:${route.model ?? ""}:${route.host}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 function scoreCandidate(

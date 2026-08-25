@@ -1,5 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { catalogCandidates, parseClineModels, parseCodexModels, parseKimiModels, parseOmpModels, parseOpenCodeModels } from "../src/models";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { catalogCandidates, ModelCatalogService, parseClineModels, parseCodexModels, parseKimiModels, parseOmpModels, parseOpenCodeModels } from "../src/models";
 
 describe("model catalog", () => {
   test("parses each harness catalog", () => {
@@ -28,5 +31,34 @@ describe("model catalog", () => {
       cost: { input: -1, output: -1 },
     }] }));
     expect(catalogCandidates({ generatedAt: "", models, sources: [] }, ["local"])[0].costWeight).toBe(0);
+  });
+
+  test("keeps the last healthy provider models when refresh fails", () => {
+    const root = join(tmpdir(), `mafia-model-cache-${crypto.randomUUID()}`);
+    const path = join(root, "models", "catalog.json");
+    mkdirSync(join(root, "models"), { recursive: true });
+    writeFileSync(path, JSON.stringify({
+      generatedAt: "2000-01-01T00:00:00.000Z",
+      models: [{
+        harness: "omp",
+        provider: "anthropic",
+        id: "claude-sonnet-5",
+        selector: "anthropic/claude-sonnet-5",
+        name: "Claude Sonnet 5",
+        source: "omp",
+        available: true,
+      }],
+      sources: [],
+    }));
+    const originalPath = process.env.PATH;
+    process.env.PATH = "";
+    try {
+      const catalog = new ModelCatalogService(root).discover(true);
+      expect(catalog.models.some((model) => model.selector === "anthropic/claude-sonnet-5")).toBe(true);
+      expect(catalog.sources.find((source) => source.harness === "omp")?.status).toBe("error");
+    } finally {
+      process.env.PATH = originalPath;
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });

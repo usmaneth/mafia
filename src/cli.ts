@@ -43,7 +43,7 @@ usage:
   mafia jobs [--json] [--state STATE]
   mafia status
   mafia watch [--interval SECONDS]
-  mafia dispatch --harness NAME --prompt TEXT [--host NAME] [--repo PATH]
+  mafia dispatch --prompt TEXT [--model MODEL] [--harness NAME] [--host NAME] [--repo PATH]
   mafia logs JOB [--lines N]
   mafia cancel JOB
   mafia handoff JOB --harness NAME [--host NAME] [--prompt TEXT]

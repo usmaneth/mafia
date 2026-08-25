@@ -86,9 +86,19 @@ export class ModelCatalogService {
     this.path = join(stateRoot, "models", "catalog.json");
   }
 
+  cached(): ModelCatalog | undefined {
+    if (!existsSync(this.path)) return undefined;
+    try {
+      return JSON.parse(readFileSync(this.path, "utf8")) as ModelCatalog;
+    } catch {
+      return undefined;
+    }
+  }
+
   discover(refresh = false): ModelCatalog {
-    if (!refresh && existsSync(this.path)) {
-      const cached = JSON.parse(readFileSync(this.path, "utf8")) as ModelCatalog;
+    let previous = this.cached();
+    if (!refresh && previous) {
+      const cached = previous;
       if (Date.now() - new Date(cached.generatedAt).getTime() < CACHE_AGE_MS) return cached;
     }
     const models: ModelRecord[] = [];
@@ -99,7 +109,14 @@ export class ModelCatalogService {
         models.push(...found);
         sources.push({ harness, status: "ok", count: found.length });
       } catch (error) {
-        sources.push({ harness, status: "error", count: 0, error: error instanceof Error ? error.message : String(error) });
+        const stale = previous?.models.filter((model) => model.harness === harness) ?? [];
+        models.push(...stale);
+        sources.push({
+          harness,
+          status: "error",
+          count: stale.length,
+          error: error instanceof Error ? error.message : String(error),
+        });
       }
     };
     add("omp", () => parseOmpModels(run("omp", ["--profile", "mafia", "models", "--json"])));
@@ -170,4 +187,60 @@ export function filterCatalog(catalog: ModelCatalog, input: {
       (!query || `${model.selector} ${model.name} ${model.provider}`.toLowerCase().includes(query))
     ).slice(0, Math.min(2000, input.limit ?? 50)),
   };
+}
+
+function normalizedModelName(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+}
+
+function modelMatchScore(model: ModelRecord, requested: string): number {
+  const raw = requested.toLowerCase().trim();
+  const normalized = normalizedModelName(requested);
+  const selector = model.selector.toLowerCase();
+  const providerId = `${model.provider}/${model.id}`.toLowerCase();
+  const id = model.id.toLowerCase();
+  const name = model.name.toLowerCase();
+  if (selector === raw) return 110;
+  if (providerId === raw) return 100;
+  if (id === raw || name === raw) return 95;
+  const normalizedSelector = normalizedModelName(model.selector);
+  const normalizedName = normalizedModelName(model.name);
+  if (normalizedSelector === normalized || normalizedName === normalized) return 94;
+  if (normalizedSelector.endsWith(normalized) || normalizedName.endsWith(normalized)) return 92;
+  const words = normalized.split(" ").filter(Boolean);
+  const haystack = normalizedModelName(`${model.selector} ${model.name} ${model.provider}`);
+  if (words.length && words.every((word) => haystack.includes(word))) return 70 + Math.min(10, words.length);
+  if (haystack.includes(normalized)) return 60;
+  return 0;
+}
+
+const nativeHarnessPriority: Record<HarnessName, number> = {
+  claude: 6,
+  codex: 5,
+  kimi: 4,
+  cline: 3,
+  opencode: 2,
+  omp: 1,
+};
+
+export function resolveCatalogModel(
+  catalog: ModelCatalog,
+  requested: string,
+  harness?: HarnessName,
+): ModelRecord {
+  const matches = catalog.models
+    .filter((model) => model.available && (!harness || model.harness === harness))
+    .map((model) => ({ model, score: modelMatchScore(model, requested) }))
+    .filter((match) => match.score > 0)
+    .sort((left, right) =>
+      right.score - left.score ||
+      nativeHarnessPriority[right.model.harness] - nativeHarnessPriority[left.model.harness] ||
+      left.model.selector.localeCompare(right.model.selector)
+    );
+  const match = matches[0]?.model;
+  if (!match) {
+    const scope = harness ? ` for ${harness}` : "";
+    throw new Error(`No available Mafia model matches "${requested}"${scope}. Use mafia models --find "${requested}".`);
+  }
+  return match;
 }

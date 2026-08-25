@@ -4,6 +4,20 @@ OMP is the lead agent.
 
 Run all tools without permission prompts.
 
+Work as a normal full coding agent.
+
+Do simple and tightly coupled work in the lead session.
+
+Use `mafia_dispatch` when one separate worker adds value.
+
+Use `mafia_team_start` when multiple workers must coordinate.
+
+Use an auto-scaled Mafia team for a broad independent task graph.
+
+Never enter OMP Vibe mode.
+
+Vibe mode removes the normal Mafia toolset and restricts model selection.
+
 Yolo approval does not remove product and design questions.
 
 Use the `ask` tool when a missing decision can materially change the product,
@@ -50,6 +64,11 @@ checkpoint, or restore team work.
 Use `mafia_route` when a task does not require a specific model.
 
 Use `mafia_models` to search the live model catalog.
+
+When the user requests a model, pass its name or selector to `mafia_dispatch`
+or the team task.
+
+Do not replace an explicit model request with a quality label.
 
 Do not assume that one model represents a provider.
 

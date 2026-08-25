@@ -20,6 +20,7 @@ import { JobStore } from "./store";
 import { extractHarnessResult } from "./result";
 import { buildHandoffPacket } from "./packet";
 import { ControlPlane } from "./control";
+import { ModelCatalogService, resolveCatalogModel } from "./models";
 import type {
   ArtifactRef,
   HarnessName,
@@ -54,9 +55,25 @@ export class MafiaService {
   readonly config = loadConfig();
   readonly store = new JobStore(this.config.stateRoot);
   readonly control = new ControlPlane(this.config.stateRoot);
+  readonly models = new ModelCatalogService(this.config.stateRoot);
 
   dispatch(input: DispatchInput): JobStatus {
-    const harness = input.harness ?? this.config.defaultHarness;
+    let harness = input.harness;
+    let model = input.model;
+    if (model) {
+      try {
+        const selected = resolveCatalogModel(
+          this.models.cached() ?? this.models.discover(),
+          model,
+          harness && isHarnessName(harness) ? harness : undefined,
+        );
+        harness ??= selected.harness;
+        model = selected.selector;
+      } catch (error) {
+        if (!harness) throw error;
+      }
+    }
+    harness ??= this.config.defaultHarness;
     if (!isHarnessName(harness)) throw new Error(`Unknown harness: ${harness}`);
     const host = resolveHost(this.config, input.host);
     const id = createId();
@@ -69,7 +86,7 @@ export class MafiaService {
       host: host.name,
       repo: input.repo,
       cwd: input.cwd,
-      model: input.model ?? this.config.harnessModels?.[harness],
+      model: model ?? this.config.harnessModels?.[harness],
       baseRef: input.baseRef,
       isolate: input.isolate ?? Boolean(input.repo),
       parentId: input.parentId,

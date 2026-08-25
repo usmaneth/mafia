@@ -7,8 +7,8 @@ import { spawnDetached } from "./process";
 import { MafiaService } from "./service";
 import { buildContextPack } from "./context";
 import { formatPacket } from "./packet";
-import { routeTask } from "./router";
-import { catalogCandidates, ModelCatalogService } from "./models";
+import { rankTaskRoutes, routeTask } from "./router";
+import { catalogCandidates, ModelCatalogService, resolveCatalogModel } from "./models";
 import { recommendParallelism } from "./scale";
 import type {
   DecisionRecord,
@@ -170,19 +170,51 @@ export class TeamService {
       if (ready.length && running === 0) {
         team.checkpointId = this.checkpoint(team.id, `wave-${new Date().toISOString()}`).id;
       }
+      const needsRouting = ready.some((task) => task.model || !task.harness);
+      const catalog = needsRouting ? this.models.cached() ?? this.models.discover() : undefined;
+      const candidates = catalog
+        ? catalogCandidates(catalog, Object.keys(this.mafia.config.hosts))
+        : [];
+      const routingHistory = needsRouting ? this.mafia.store.routingHistory() : new Map();
       for (const task of ready) {
         if (dispatched >= slots) break;
-        const route = task.harness
-          ? undefined
-          : routeTask(this.mafia.config, {
+        let route;
+        if (task.model) {
+          if (!catalog) throw new Error("The Mafia model catalog is unavailable.");
+          const selected = resolveCatalogModel(catalog, task.model, task.harness);
+          task.harness = selected.harness;
+          task.model = selected.selector;
+          task.host ??= this.mafia.config.defaultHost;
+          const alternatives = rankTaskRoutes(this.mafia.config, {
+            capability: task.capability ?? "general",
+            host: task.host,
+            downgrade: budget.downgrade,
+          }, routingHistory, candidates).filter((candidate) =>
+            candidate.harness !== task.harness || candidate.model !== task.model || candidate.host !== task.host
+          );
+          if (task.allowFallback !== false && task.fallbackRoutes === undefined) {
+            task.fallbackRoutes = alternatives
+              .slice(0, task.retries ?? 1)
+              .map(({ harness, model, host }) => ({ harness, model, host }));
+          }
+        } else if (!task.harness) {
+          route = routeTask(this.mafia.config, {
               capability: task.capability ?? "general",
               preferredModels: task.preferredModels,
               host: task.host,
               downgrade: budget.downgrade,
-            }, this.mafia.store.routingHistory(), catalogCandidates(
-              this.models.discover(),
-              Object.keys(this.mafia.config.hosts),
-            ));
+            }, routingHistory, candidates);
+          if (task.allowFallback !== false && task.fallbackRoutes === undefined) {
+            task.fallbackRoutes = rankTaskRoutes(this.mafia.config, {
+              capability: task.capability ?? "general",
+              host: task.host,
+              downgrade: budget.downgrade,
+            }, routingHistory, candidates)
+              .slice(1)
+              .slice(0, task.retries ?? 1)
+              .map(({ harness, model, host }) => ({ harness, model, host }));
+          }
+        }
         if (route) {
           task.harness = route.harness;
           task.host = route.host;
@@ -489,6 +521,20 @@ export class TeamService {
       if (job.state === "succeeded") task.state = "succeeded";
       else if (["failed", "cancelled", "lost"].includes(job.state)) {
         if (job.state !== "cancelled" && task.attempts <= (task.retries ?? 1)) {
+          const fallback = task.allowFallback === false ? undefined : task.fallbackRoutes?.shift();
+          if (fallback) {
+            task.harness = fallback.harness;
+            task.model = fallback.model;
+            task.host = fallback.host;
+            this.mafia.control.event({
+              teamId: team.id,
+              jobId: job.id,
+              host: fallback.host,
+              actor: "router",
+              type: "route.fallback",
+              data: { taskId: task.id, attempt: task.attempts + 1, ...fallback },
+            });
+          }
           task.state = "waiting";
           task.jobId = undefined;
           task.error = `Attempt ${task.attempts} failed: ${job.error ?? job.state}`;
