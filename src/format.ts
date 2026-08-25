@@ -68,7 +68,8 @@ export type AgentDashboardFilter = "all" | "active" | "failed" | "vps" | "local"
 
 export function formatAgentWidget(jobs: JobStatus[]): string {
   const active = jobs.filter((job) => ["queued", "starting", "running"].includes(job.state));
-  const failed = jobs.filter((job) => job.state === "failed");
+  const failed = jobs.filter((job) =>
+    job.state === "failed" && Date.now() - new Date(job.updatedAt).getTime() < 60 * 60 * 1000);
   const remote = active.filter((job) => job.host !== "local").length;
   const local = active.length - remote;
   return `Agents ${active.length} active | VPS ${remote} | local ${local}${failed.length ? ` | ${failed.length} failed` : ""}`;
