@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { formatVpsDashboard, formatVpsTelemetry, formatVpsWidget } from "../src/format";
+import { formatAgentDashboard, formatAgentWidget, formatVpsDashboard, formatVpsTelemetry, formatVpsWidget } from "../src/format";
 import type { VpsTelemetry } from "../src/types";
 
 const telemetry: VpsTelemetry = {
@@ -59,6 +59,22 @@ const telemetry: VpsTelemetry = {
 };
 
 describe("VPS telemetry", () => {
+  test("formats one compact worker line and a detailed hub", () => {
+    const jobs = telemetry.jobs.recent.map((job) => ({
+      ...job,
+      prompt: "work",
+      host: "vps",
+      isolate: true,
+      labels: [],
+      createdAt: job.updatedAt,
+      stateRoot: "/tmp/mafia",
+      timeoutSeconds: 60,
+      logPath: "/tmp/output.log",
+    }));
+    expect(formatAgentWidget(jobs)).toContain("Agents 1 active | VPS 1");
+    expect(formatAgentDashboard(jobs, "active")).toContain("Implement API");
+  });
+
   test("formats the operational summary and relevant processes", () => {
     const value = formatVpsTelemetry(telemetry);
     expect(value).toContain("VPS vps-test - online 42ms");

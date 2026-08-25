@@ -1,6 +1,7 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
+import { spawnSync } from "node:child_process";
 import type { HostConfig, JobSpec, JobStatus, MafiaEvent, MafiaMessage } from "./types";
 import { repoRoot } from "./config";
 import { run, shellQuote } from "./process";
@@ -24,6 +25,10 @@ export function dispatchRemote(host: HostConfig, spec: JobSpec): number {
   const remoteSpec = join(remoteDir, "spec.json");
   run("ssh", [host.target, `mkdir -p ${shellQuote(remoteDir)}`]);
   const remoteValue = { ...spec };
+  const snapshot = spec.repo && existsSync(spec.repo)
+    ? prepareRemoteWorkspace(host, spec)
+    : undefined;
+  if (snapshot) Object.assign(remoteValue, snapshot);
   if (spec.contextPackPath && existsSync(spec.contextPackPath)) {
     const remoteContext = join(remoteDir, "context.md");
     run("scp", [spec.contextPackPath, `${host.target}:${remoteContext}`]);
@@ -40,6 +45,73 @@ export function dispatchRemote(host: HostConfig, spec: JobSpec): number {
   ].join(" ");
   const command = user ? `sudo -iu ${shellQuote(user)} bash -lc ${shellQuote(inner)}` : inner;
   return Number(run("ssh", [host.target, command]));
+}
+
+export function repoSlugFromOrigin(origin: string): string | undefined {
+  const normalized = origin.trim().replace(/\.git$/, "").replace(/^git@github\.com:/, "https://github.com/");
+  const match = normalized.match(/github\.com[/:]([^/]+)\/([^/]+)$/i);
+  return match ? `${match[1]}/${match[2]}` : undefined;
+}
+
+function prepareRemoteWorkspace(host: HostConfig, spec: JobSpec): Partial<JobSpec> | undefined {
+  if (!host.target || !spec.repo) return undefined;
+  const root = run("git", ["-C", spec.repo, "rev-parse", "--show-toplevel"]);
+  const origin = run("git", ["-C", root, "remote", "get-url", "origin"]);
+  const slug = repoSlugFromOrigin(origin);
+  if (!slug) throw new Error(`Cannot map the Git remote for ${root} to the VPS.`);
+  const remoteRepo = `/home/${host.defaultUser ?? "usman"}/mafia-workspaces/${slug}`;
+  const remoteSnapshot = join(host.stateRoot, "snapshots", spec.id);
+  const ref = `refs/mafia/snapshots/${spec.id}`;
+  const temp = mkdtempSync(join(tmpdir(), `${spec.id}-`));
+  const bundle = join(temp, "workspace.bundle");
+  const patch = join(temp, "workspace.patch");
+  const archive = join(temp, "untracked.tar");
+  try {
+    run("git", ["-C", root, "bundle", "create", bundle, "HEAD"]);
+    const diff = spawnSync("git", ["-C", root, "diff", "--binary", "HEAD"], {
+      encoding: "buffer",
+      maxBuffer: 64 * 1024 * 1024,
+    });
+    if (diff.status !== 0) throw new Error((diff.stderr?.toString() || "Cannot create the workspace patch.").trim());
+    writeFileSync(patch, diff.stdout);
+    const untracked = spawnSync("git", ["-C", root, "ls-files", "--others", "--exclude-standard", "-z"], {
+      encoding: "buffer",
+    });
+    if (untracked.status !== 0) throw new Error("Cannot list untracked files.");
+    const tar = spawnSync("tar", ["-cf", archive, "--null", "-T", "-"], {
+      cwd: root,
+      input: untracked.stdout,
+      encoding: "buffer",
+      env: { ...process.env, COPYFILE_DISABLE: "1" },
+    });
+    if (tar.status !== 0) throw new Error((tar.stderr?.toString() || "Cannot archive untracked files.").trim());
+    const ownership = host.defaultUser
+      ? ` && chown -R ${shellQuote(host.defaultUser)} ${shellQuote(remoteSnapshot)} ${shellQuote(dirname(remoteRepo))}`
+      : "";
+    run("ssh", [
+      host.target,
+      `mkdir -p ${shellQuote(remoteSnapshot)} ${shellQuote(dirname(remoteRepo))}${ownership}`,
+    ]);
+    run("scp", [bundle, patch, archive, `${host.target}:${remoteSnapshot}/`]);
+    const user = host.defaultUser;
+    const inner = [
+      `if ! git -C ${shellQuote(remoteRepo)} rev-parse --git-dir >/dev/null 2>&1; then gh repo clone ${shellQuote(slug)} ${shellQuote(remoteRepo)}; fi`,
+      `git -C ${shellQuote(remoteRepo)} fetch origin --prune`,
+      `git -C ${shellQuote(remoteRepo)} fetch ${shellQuote(join(remoteSnapshot, "workspace.bundle"))} HEAD:${shellQuote(ref)}`,
+    ].join(" && ");
+    run("ssh", [host.target, user ? `sudo -iu ${shellQuote(user)} bash -lc ${shellQuote(inner)}` : inner]);
+    return {
+      repo: remoteRepo,
+      cwd: undefined,
+      baseRef: ref,
+      isolate: true,
+      workspaceSource: root,
+      workspacePatchPath: diff.stdout.length ? join(remoteSnapshot, "workspace.patch") : undefined,
+      workspaceArchivePath: join(remoteSnapshot, "untracked.tar"),
+    };
+  } finally {
+    rmSync(temp, { recursive: true, force: true });
+  }
 }
 
 export function appendRemoteMessage(host: HostConfig, message: MafiaMessage): void {

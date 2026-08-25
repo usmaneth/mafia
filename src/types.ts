@@ -54,6 +54,9 @@ export interface JobSpec {
   timeoutSeconds: number;
   taskId?: string;
   contextPackPath?: string;
+  workspaceSource?: string;
+  workspacePatchPath?: string;
+  workspaceArchivePath?: string;
   budget?: TeamBudget;
 }
 

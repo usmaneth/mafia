@@ -35,11 +35,13 @@ export function rankTaskRoutes(
 ): RouteDecision[] {
   const candidates = (discovered?.length ? discovered : config.routing?.candidates ?? defaultCandidates()).filter((candidate) => {
     if (!candidate.enabled) return false;
+    if (!config.hosts[candidate.host]) return false;
     if (input.host && candidate.host !== input.host) return false;
     if (input.preferredModels?.length && candidate.model && !input.preferredModels.includes(candidate.model)) return false;
     return candidate.capabilities.includes(input.capability) || candidate.capabilities.includes("general");
   });
-  const scored = candidates.map((candidate) => scoreCandidate(candidate, history, input.downgrade ?? false));
+  const scored = candidates.map((candidate) =>
+    scoreCandidate(candidate, history, input.downgrade ?? false, !input.host));
   scored.sort((a, b) => b.score - a.score);
   const seen = new Set<string>();
   return scored.filter((route) => {
@@ -54,13 +56,15 @@ function scoreCandidate(
   candidate: RoutingCandidate,
   history: Map<string, UsageMetrics>,
   downgrade: boolean,
+  preferRemote: boolean,
 ): RouteDecision {
   const key = `${candidate.harness}:${candidate.model ?? ""}:${candidate.host}`;
   const metrics = history.get(key);
   const failureRate = metrics?.requests ? metrics.failures / metrics.requests : 0;
   const costPenalty = candidate.costWeight * (downgrade ? 35 : 15);
   const latencyPenalty = candidate.latency * 8;
-  const score = candidate.quality * 100 - costPenalty - latencyPenalty - failureRate * 60;
+  const remoteBonus = preferRemote && candidate.host !== "local" ? 20 : 0;
+  const score = candidate.quality * 100 - costPenalty - latencyPenalty - failureRate * 60 + remoteBonus;
   return {
     harness: candidate.harness,
     model: candidate.model,
@@ -72,6 +76,7 @@ function scoreCandidate(
       `latency ${candidate.latency.toFixed(2)}`,
       metrics ? `observed failure rate ${(failureRate * 100).toFixed(1)}%` : "no observed failures",
       downgrade ? "budget downgrade active" : "normal budget mode",
+      remoteBonus ? "VPS-first execution" : "requested host",
     ],
   };
 }

@@ -16,8 +16,8 @@ export function configPath(): string {
 
 export function defaultConfig(): MafiaConfig {
   return {
-    version: 2,
-    defaultHost: "local",
+    version: 3,
+    defaultHost: "vps",
     defaultHarness: "codex",
     stateRoot: join(homedir(), ".local", "share", "mafia"),
     vaultRoot: join(homedir(), "vault"),

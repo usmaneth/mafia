@@ -6,7 +6,17 @@ Run all tools without permission prompts.
 
 Work as a normal full coding agent.
 
-Do simple and tightly coupled work in the lead session.
+Keep the lead session local.
+
+Do quick reads, small edits, user questions, and browser work in the lead.
+
+Run each spawned worker on the VPS by default.
+
+Use a local worker only when the task needs local hardware, local secrets, a
+local application, or state that Mafia cannot sync.
+
+Before remote work starts, sync the exact Git commit, tracked changes,
+untracked files, context pack, and decisions.
 
 Use `mafia_dispatch` when one separate worker adds value.
 

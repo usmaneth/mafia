@@ -94,6 +94,23 @@ function prepareWorkspace() {
   const branch = `mafia/${spec.id}`;
   mkdirSync(dirname(worktree), { recursive: true });
   git(["worktree", "add", "-b", branch, worktree, spec.baseRef || "HEAD"], root);
+  if (spec.workspacePatchPath && existsSync(spec.workspacePatchPath)) {
+    const result = spawnSync("git", ["apply", "--binary", spec.workspacePatchPath], {
+      cwd: worktree,
+      encoding: "utf8",
+    });
+    if (result.status !== 0) {
+      throw new Error((result.stderr || result.stdout || "Cannot apply the workspace patch.").trim());
+    }
+  }
+  if (spec.workspaceArchivePath && existsSync(spec.workspaceArchivePath)) {
+    const result = spawnSync("tar", ["-xf", spec.workspaceArchivePath, "-C", worktree], {
+      encoding: "utf8",
+    });
+    if (result.status !== 0) {
+      throw new Error((result.stderr || result.stdout || "Cannot unpack the workspace files.").trim());
+    }
+  }
   writeStatus({ worktree, branch });
   return worktree;
 }

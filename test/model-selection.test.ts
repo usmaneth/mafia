@@ -139,4 +139,35 @@ describe("model selection", () => {
       "openrouter/nvidia/nemotron",
     ]));
   });
+
+  test("prefers the VPS when the caller does not select a host", () => {
+    const config = {
+      version: 3,
+      defaultHost: "vps",
+      defaultHarness: "codex",
+      stateRoot: "/tmp/mafia",
+      hosts: {
+        local: { name: "local", kind: "local", stateRoot: "/tmp/mafia" },
+        vps: { name: "vps", kind: "ssh", target: "example", stateRoot: "/tmp/mafia-vps" },
+      },
+    } satisfies MafiaConfig;
+    const base = {
+      harness: "codex" as const,
+      model: "gpt-5.4",
+      capabilities: ["general" as const],
+      enabled: true,
+      costWeight: 0.5,
+      quality: 0.96,
+      latency: 0.5,
+    };
+    const routes = rankTaskRoutes(config, { capability: "general" }, new Map(), [
+      { ...base, host: "local" },
+      { ...base, host: "vps" },
+    ]);
+    expect(routes[0].host).toBe("vps");
+    expect(rankTaskRoutes(config, { capability: "general", host: "local" }, new Map(), [
+      { ...base, host: "local" },
+      { ...base, host: "vps" },
+    ])[0].host).toBe("local");
+  });
 });

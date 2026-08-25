@@ -90,8 +90,27 @@ function configureCodexOAuthRoles(): UpdateResult {
   }
 }
 
+function configureVpsFirst(): UpdateResult {
+  const path = join(homedir(), ".config", "mafia", "config.json");
+  try {
+    const input = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
+    const value = { ...input, version: Math.max(3, Number(input.version ?? 0)), defaultHost: "vps" };
+    const temp = `${path}.${process.pid}.tmp`;
+    writeFileSync(temp, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
+    renameSync(temp, path);
+    return { target: "execution-policy", status: "ok", detail: "Spawned Mafia workers default to the VPS." };
+  } catch (error) {
+    return {
+      target: "execution-policy",
+      status: "error",
+      detail: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
 export function updateMafia(options: { push?: boolean; deploy?: boolean } = {}): UpdateResult[] {
   const results: UpdateResult[] = [];
+  results.push(configureVpsFirst());
   const remote = exec("git", ["remote"]);
   const dirty = exec("git", ["status", "--porcelain"]);
   const clean = dirty.ok && !dirty.output;

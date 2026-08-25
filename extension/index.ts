@@ -1,7 +1,7 @@
 import type { ExtensionAPI, ExtensionCommandContext } from "@oh-my-pi/pi-coding-agent";
 import { spawn } from "node:child_process";
 import { join } from "node:path";
-import { formatHub, formatJobs, formatMessages, formatPrDashboard, formatTeam, formatTeams, formatVpsTelemetry, formatVpsWidget } from "../src/format";
+import { formatAgentWidget, formatHub, formatJobs, formatMessages, formatPrDashboard, formatTeam, formatTeams, formatVpsTelemetry, formatVpsWidget } from "../src/format";
 import { protocolSpec } from "../src/protocols";
 import { routeTask } from "../src/router";
 import { loadConfig, repoRoot } from "../src/config";
@@ -13,6 +13,7 @@ import { readVpsTelemetry, refreshVpsTelemetry } from "../src/telemetry";
 import { showVpsDashboard } from "./vps-dashboard";
 import { readPrTelemetry, refreshPrTelemetry } from "../src/pr";
 import { showPrDashboard } from "./pr-dashboard";
+import { showAgentDashboard } from "./agent-dashboard";
 
 export function sessionUsesVibeMode(entries: readonly unknown[]): boolean {
   let mode = "none";
@@ -549,6 +550,8 @@ MAFIA DESIGN CHECKPOINT POLICY:
           await showVpsDashboard(ctx, { allProcesses: text.includes("--all") });
         } else if (text === "prs") {
           await showPrDashboard(ctx);
+        } else if (!text) {
+          await showAgentDashboard(ctx);
         } else {
           const teams = formatTeams(new TeamService().list(10));
           const jobs = formatJobs(new MafiaService().listCached(20));
@@ -583,6 +586,20 @@ MAFIA DESIGN CHECKPOINT POLICY:
     },
   });
 
+  pi.registerCommand("hub", {
+    description: "Open the Mafia agent hub",
+    handler: async (_args, ctx) => {
+      await showAgentDashboard(ctx);
+    },
+  });
+
+  pi.registerCommand("agents", {
+    description: "Open the Mafia agent hub",
+    handler: async (_args, ctx) => {
+      await showAgentDashboard(ctx);
+    },
+  });
+
   pi.registerCommand("prs", {
     description: "Open the Mafia PR automation dashboard",
     handler: async (_args, ctx) => {
@@ -594,6 +611,7 @@ MAFIA DESIGN CHECKPOINT POLICY:
     const mafia = new MafiaService();
     let collectorRunning = false;
     let lastVps = "";
+    let lastAgents = "";
     const collectVps = () => {
       if (collectorRunning) return;
       collectorRunning = true;
@@ -615,6 +633,11 @@ MAFIA DESIGN CHECKPOINT POLICY:
         if (vps !== lastVps) {
           ctx.ui.setStatus("mafia-vps", vps);
           lastVps = vps;
+        }
+        const agents = formatAgentWidget(mafia.listCached(500));
+        if (agents !== lastAgents) {
+          ctx.ui.setStatus("mafia-agents", agents);
+          lastAgents = agents;
         }
       } catch {}
     };

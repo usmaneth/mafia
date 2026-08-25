@@ -64,6 +64,51 @@ export function formatTeam(team: TeamStatus): string {
   return lines.join("\n");
 }
 
+export type AgentDashboardFilter = "all" | "active" | "failed" | "vps" | "local";
+
+export function formatAgentWidget(jobs: JobStatus[]): string {
+  const active = jobs.filter((job) => ["queued", "starting", "running"].includes(job.state));
+  const failed = jobs.filter((job) => job.state === "failed");
+  const remote = active.filter((job) => job.host !== "local").length;
+  const local = active.length - remote;
+  return `Agents ${active.length} active | VPS ${remote} | local ${local}${failed.length ? ` | ${failed.length} failed` : ""}`;
+}
+
+export function formatAgentDashboard(jobs: JobStatus[], filter: AgentDashboardFilter = "all"): string {
+  const activeStates = new Set(["queued", "starting", "running"]);
+  const selected = jobs.filter((job) => {
+    if (filter === "active") return activeStates.has(job.state);
+    if (filter === "failed") return job.state === "failed";
+    if (filter === "vps") return job.host !== "local";
+    if (filter === "local") return job.host === "local";
+    return true;
+  });
+  const active = jobs.filter((job) => activeStates.has(job.state));
+  const heartbeat = (job: JobStatus): string => job.heartbeatAt ? age(job.heartbeatAt) : age(job.updatedAt);
+  const lines = [
+    "MAFIA AGENT HUB",
+    `${formatAgentWidget(jobs)} | view ${filter}`,
+    "",
+    "== ACTIVE WORK ==",
+    ...(active.length
+      ? active.slice(0, 12).map((job) =>
+        `${fit(job.host, 7)} ${fit(job.harness, 10)} ${fit(job.model ?? "default", 36)} ` +
+        `${fit(heartbeat(job), 6)} ${job.title}`)
+      : ["No agents run now."]),
+    "",
+    `== AGENTS - ${filter.toUpperCase()} (${selected.length}) ==`,
+    `${fit("STATE", 10)} ${fit("HOST", 7)} ${fit("HARNESS", 10)} ${fit("MODEL", 36)} ${fit("BEAT", 6)} TASK`,
+  ];
+  for (const job of selected) {
+    lines.push(
+      `${fit(job.state, 10)} ${fit(job.host, 7)} ${fit(job.harness, 10)} ${fit(job.model ?? "default", 36)} ` +
+      `${fit(heartbeat(job), 6)} ${job.title}${job.error ? ` | ${job.error}` : ""}`,
+    );
+  }
+  if (!selected.length) lines.push("No agents match this view.");
+  return lines.join("\n");
+}
+
 export function formatMessages(messages: MafiaMessage[]): string {
   if (!messages.length) return "no Mafia messages";
   return [...messages].reverse().map((message) => {
