@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { catalogCandidates, ModelCatalogService, parseClineModels, parseCodexModels, parseKimiModels, parseOmpModels, parseOpenCodeModels } from "../src/models";
+import { catalogCandidates, ModelCatalogService, parseClaudeModels, parseClineModels, parseCodexModels, parseKimiModels, parseOmpModels, parseOpenCodeModels } from "../src/models";
 
 describe("model catalog", () => {
   test("parses each harness catalog", () => {
@@ -21,6 +21,14 @@ describe("model catalog", () => {
     const candidates = catalogCandidates({ generatedAt: "", models, sources: [] }, ["local", "vps"]);
     expect(candidates).toHaveLength(2);
     expect(candidates.every((item) => item.model === "openai/gpt-5.5")).toBe(true);
+  });
+
+  test("adds Claude Code native aliases without OMP Anthropic models", () => {
+    expect(parseClaudeModels([]).map((model) => model.selector)).toEqual([
+      "sonnet",
+      "opus",
+      "haiku",
+    ]);
   });
 
   test("does not treat negative provider price sentinels as a discount", () => {

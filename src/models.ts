@@ -79,6 +79,32 @@ export function parseClineModels(raw: string): ModelRecord[] {
   });
 }
 
+export function parseClaudeModels(anthropic: ModelRecord[]): ModelRecord[] {
+  const aliases = [
+    { id: "sonnet", name: "Claude Sonnet" },
+    { id: "opus", name: "Claude Opus" },
+    { id: "haiku", name: "Claude Haiku" },
+  ];
+  return [
+    ...aliases.map(({ id, name }) => ({
+      harness: "claude" as const,
+      provider: "anthropic",
+      id,
+      selector: id,
+      name,
+      source: "claude" as const,
+      available: true,
+      reasoning: true,
+    })),
+    ...anthropic.map((model) => ({
+      ...model,
+      harness: "claude" as const,
+      source: "claude" as const,
+      selector: model.id,
+    })),
+  ];
+}
+
 export class ModelCatalogService {
   readonly path: string;
 
@@ -121,8 +147,9 @@ export class ModelCatalogService {
     };
     add("omp", () => parseOmpModels(run("omp", ["--profile", "mafia", "models", "--json"])));
     const anthropic = models.filter((model) => model.harness === "omp" && model.provider === "anthropic");
-    models.push(...anthropic.map((model) => ({ ...model, harness: "claude" as const, source: "claude" as const, selector: model.id })));
-    sources.push({ harness: "claude", status: "ok", count: anthropic.length });
+    const claude = parseClaudeModels(anthropic);
+    models.push(...claude);
+    sources.push({ harness: "claude", status: "ok", count: claude.length });
     add("opencode", () => parseOpenCodeModels(run("opencode", ["models"])));
     add("codex", () => {
       const config = readFileSync(join(homedir(), ".codex", "config.toml"), "utf8");
@@ -207,6 +234,7 @@ function modelMatchScore(model: ModelRecord, requested: string): number {
   const normalizedName = normalizedModelName(model.name);
   if (normalizedSelector === normalized || normalizedName === normalized) return 94;
   if (normalizedSelector.endsWith(normalized) || normalizedName.endsWith(normalized)) return 92;
+  if (["sonnet", "opus", "haiku"].includes(id) && normalized.includes(id)) return 91;
   const words = normalized.split(" ").filter(Boolean);
   const haystack = normalizedModelName(`${model.selector} ${model.name} ${model.provider}`);
   if (words.length && words.every((word) => haystack.includes(word))) return 70 + Math.min(10, words.length);

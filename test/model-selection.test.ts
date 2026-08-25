@@ -17,6 +17,15 @@ const catalog: ModelCatalog = {
       available: true,
     },
     {
+      harness: "claude",
+      provider: "anthropic",
+      id: "sonnet",
+      selector: "sonnet",
+      name: "Claude Sonnet",
+      source: "claude",
+      available: true,
+    },
+    {
       harness: "omp",
       provider: "anthropic",
       id: "claude-sonnet-5",
@@ -60,6 +69,11 @@ describe("model selection", () => {
 
   test("does not confuse Sonnet 5 with Sonnet 3.5", () => {
     expect(resolveCatalogModel(catalog, "sonnet 5").id).toBe("claude-sonnet-5");
+  });
+
+  test("maps a versioned family request to a native Claude alias", () => {
+    const aliasOnly = { ...catalog, models: catalog.models.filter((model) => model.id !== "claude-sonnet-5") };
+    expect(resolveCatalogModel(aliasOnly, "sonnet 5").selector).toBe("sonnet");
   });
 
   test("ranks the complete eligible fallback set", () => {
