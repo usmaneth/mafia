@@ -37,6 +37,12 @@ export function updateMafia(options: { push?: boolean; deploy?: boolean } = {}):
   try {
     const catalog = new ModelCatalogService(loadConfig().stateRoot).discover(true);
     results.push({ target: "model-catalog", status: "ok", detail: `${catalog.models.length} models from ${catalog.sources.length} harnesses.` });
+    const ompScope = exec("omp", ["--profile", "mafia", "config", "reset", "enabledModels"]);
+    results.push({
+      target: "omp-model-page",
+      status: ompScope.ok ? "ok" : "error",
+      detail: ompScope.output || "The TUI uses every available authenticated model.",
+    });
   } catch (error) {
     results.push({ target: "model-catalog", status: "error", detail: error instanceof Error ? error.message : String(error) });
   }

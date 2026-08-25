@@ -10,13 +10,7 @@ startup:
   checkUpdate: false
 marketplace:
   autoUpdate: "off"
-enabledModels:
-  - anthropic/claude-opus-5
-  - openai-codex/gpt-5.4
-  - kimi-code/k3
-  - xai-oauth/grok-build
-  - openrouter/nvidia/nemotron-3-ultra-550b-a55b:free
-  - google/gemini-3.7-flash
+enabledModels: []
 modelRoles:
   default: openrouter/nvidia/nemotron-3-ultra-550b-a55b:free:high
   smol: google/gemini-3.7-flash
