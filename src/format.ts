@@ -176,6 +176,145 @@ export function formatVpsWidget(value: VpsTelemetry): string[] {
   return lines;
 }
 
+function duration(seconds?: number): string {
+  if (seconds === undefined) return "-";
+  if (seconds < 60) return `${Math.floor(seconds)}s`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h`;
+  return `${Math.floor(seconds / 86400)}d`;
+}
+
+export function formatVpsDashboard(value: VpsTelemetry, options: { allProcesses?: boolean } = {}): string {
+  if (!value.reachable) {
+    return [
+      "MAFIA VPS OPERATIONS",
+      "",
+      "== ALERTS ==",
+      `VPS offline: ${value.error ?? "SSH failed"}`,
+      `Last check: ${telemetryAge(value.generatedAt)} ago`,
+    ].join("\n");
+  }
+
+  const processFilter = /(mafia|omp|claude|codex|kimi|cline|opencode|hermes|herdr|vault|watch|agent|proxy)/i;
+  const processes = options.allProcesses
+    ? value.processes
+    : value.processes.filter((process) => processFilter.test(process.command));
+  const providerState = value.models.fallbackOrder.map((harness) => {
+    const source = value.models.sources.find((item) => item.harness === harness);
+    if (!source) return `${harness}: unknown`;
+    if (source.status !== "ok") return `${harness}: failed`;
+    return `${harness}: ${source.count > 0 ? `${source.count} models` : "EMPTY"}`;
+  });
+  const unitFailures = value.units.filter((unit) => {
+    const oneshot = ["mafia-update.service", "provider-auth-monitor.service"].includes(unit.name);
+    const shouldBeActive = unit.name.endsWith(".timer") || (unit.name.endsWith(".service") && !oneshot);
+    return unit.active === "failed"
+      || unit.sub === "failed"
+      || (shouldBeActive && unit.active !== "active")
+      || Boolean(unit.result && !["success", "done"].includes(unit.result));
+  });
+  const emptyFallbacks = value.models.fallbackOrder.filter((harness) => {
+    const source = value.models.sources.find((item) => item.harness === harness);
+    return !source || source.status !== "ok" || source.count === 0;
+  });
+  const alerts = [
+    ...(value.jobs.failed ? [`${value.jobs.failed} failed Mafia job(s)`] : []),
+    ...(value.jobs.lost ? [`${value.jobs.lost} lost Mafia job(s)`] : []),
+    ...emptyFallbacks.map((harness) => `${harness} fallback is unavailable`),
+    ...unitFailures.map((unit) => `${unit.name} is ${unit.active}/${unit.sub}${unit.result ? ` (${unit.result})` : ""}`),
+    ...(value.deployment?.dirty ? [`Mafia repository has ${value.deployment.dirtyFiles} changed file(s)`] : []),
+  ];
+  const memory = value.memory ? `${bytes(value.memory.usedBytes)}/${bytes(value.memory.totalBytes)}` : "-";
+  const swap = value.memory ? `${bytes(value.memory.swapUsedBytes)}/${bytes(value.memory.swapTotalBytes)}` : "-";
+  const load = value.load?.map((item) => item.toFixed(2)).join(" / ") ?? "-";
+  const lines = [
+    `MAFIA VPS OPERATIONS - ${value.host}`,
+    `Snapshot ${telemetryAge(value.generatedAt)} ago | SSH ${value.latencyMs}ms | process scope ${options.allProcesses ? "all" : "agent-related"}`,
+    "",
+    "== ALERTS ==",
+    ...(alerts.length ? alerts.map((item) => `! ${item}`) : ["No active alerts."]),
+    "",
+    "== HOST ==",
+    `Load: ${load}`,
+    `Memory: ${memory} | Swap: ${swap} | Disk: ${value.disk?.percent ?? "-"}%`,
+    `Uptime: ${duration(value.uptimeSeconds)} | Processes: ${value.processes.length} total / ${processes.length} shown`,
+  ];
+
+  if (value.deployment) {
+    lines.push(
+      "",
+      "== DEPLOYMENT ==",
+      `Repository: ${value.deployment.repoPath}`,
+      `Branch: ${value.deployment.branch ?? "-"} | HEAD: ${value.deployment.sha ?? "-"} | origin/master: ${value.deployment.originSha ?? "-"}`,
+      `Worktree: ${value.deployment.dirty ? `DIRTY (${value.deployment.dirtyFiles} files)` : "clean"}`,
+    );
+  }
+
+  lines.push(
+    "",
+    "== WORKERS ==",
+    `Running: ${value.jobs.running} | Failed: ${value.jobs.failed} | Lost: ${value.jobs.lost} | Total: ${value.jobs.total}`,
+    `Active by harness: ${Object.entries(value.jobs.byHarness).map(([name, count]) => `${name}:${count}`).join(" ") || "none"}`,
+    "",
+    `${fit("STATE", 10)} ${fit("HARNESS", 10)} ${fit("MODEL", 34)} ${fit("AGE", 6)} TITLE`,
+  );
+  for (const job of value.jobs.recent) {
+    lines.push(
+      `${fit(job.state, 10)} ${fit(job.harness, 10)} ${fit(job.model ?? "default", 34)} ${fit(age(job.updatedAt), 6)} ${job.title}${job.error ? ` | ${job.error}` : ""}`,
+    );
+  }
+
+  lines.push(
+    "",
+    "== MODEL ROUTING ==",
+    `Fallback order: ${value.models.fallbackOrder.join(" > ") || "-"}`,
+    `Fallback health: ${providerState.join(" | ") || "-"}`,
+    `Catalog: ${value.models.total} models | Generated: ${value.models.generatedAt ? `${telemetryAge(value.models.generatedAt)} ago` : "-"}`,
+    "",
+    `${fit("HARNESS", 14)} ${fit("STATUS", 10)} ${fit("MODELS", 8)} ERROR`,
+  );
+  for (const source of value.models.sources) {
+    lines.push(`${fit(source.harness, 14)} ${fit(source.status, 10)} ${fit(String(source.count), 8)} ${source.error ?? ""}`);
+  }
+
+  lines.push(
+    "",
+    "== WATCHERS AND SERVICES ==",
+    `${fit("UNIT", 34)} ${fit("ACTIVE", 10)} ${fit("SUB", 12)} ${fit("RESULT", 10)} EXIT DESCRIPTION`,
+  );
+  for (const unit of value.units) {
+    lines.push(
+      `${fit(unit.name, 34)} ${fit(unit.active, 10)} ${fit(unit.sub, 12)} ${fit(unit.result ?? "-", 10)} ` +
+      `${String(unit.execStatus ?? "-").padEnd(4)} ${unit.description}`,
+    );
+  }
+
+  lines.push(
+    "",
+    "== TIMERS ==",
+    `${fit("TIMER", 34)} ${fit("NEXT", 38)} LAST`,
+  );
+  for (const timer of value.timers) {
+    lines.push(`${fit(timer.name, 34)} ${fit(timer.next ?? "-", 38)} ${timer.last ?? "-"}`);
+  }
+
+  lines.push(
+    "",
+    `== PROCESSES - ${options.allProcesses ? "ALL" : "AGENT-RELATED"} ==`,
+    `${fit("PID", 8)} ${fit("USER", 10)} ${fit("STATE", 7)} ${fit("CPU", 7)} ${fit("MEM", 7)} ${fit("AGE", 8)} COMMAND`,
+  );
+  for (const process of processes) {
+    lines.push(
+      `${fit(String(process.pid), 8)} ${fit(process.user, 10)} ${fit(process.state, 7)} ` +
+      `${fit(`${process.cpuPercent.toFixed(1)}%`, 7)} ${fit(`${process.memoryPercent.toFixed(1)}%`, 7)} ` +
+      `${fit(duration(process.ageSeconds), 8)} ${process.command}`,
+    );
+  }
+  if (!processes.length) lines.push("No matching processes.");
+
+  return lines.join("\n");
+}
+
 export function formatVpsTelemetry(value: VpsTelemetry, options: { compact?: boolean; allProcesses?: boolean } = {}): string {
   if (!value.reachable) {
     return `VPS - offline - ${value.error ?? "SSH failed"} - checked ${telemetryAge(value.generatedAt)} ago`;

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { formatVpsTelemetry, formatVpsWidget } from "../src/format";
+import { formatVpsDashboard, formatVpsTelemetry, formatVpsWidget } from "../src/format";
 import type { VpsTelemetry } from "../src/types";
 
 const telemetry: VpsTelemetry = {
@@ -10,6 +10,14 @@ const telemetry: VpsTelemetry = {
   load: [1, 0.5, 0.25],
   memory: { usedBytes: 4_000_000_000, totalBytes: 8_000_000_000, swapUsedBytes: 0, swapTotalBytes: 1_000_000_000 },
   disk: { usedBytes: 70, totalBytes: 100, percent: 70 },
+  deployment: {
+    repoPath: "/home/usman/mafia",
+    branch: "master",
+    sha: "abc123",
+    originSha: "abc123",
+    dirty: false,
+    dirtyFiles: 0,
+  },
   jobs: {
     total: 8,
     running: 3,
@@ -30,7 +38,14 @@ const telemetry: VpsTelemetry = {
     sources: [{ harness: "omp", status: "ok", count: 500 }],
     fallbackOrder: ["codex", "claude", "omp"],
   },
-  units: [{ name: "mafia-update.timer", active: "active", sub: "waiting", description: "" }],
+  units: [{
+    name: "mafia-update.timer",
+    active: "active",
+    sub: "waiting",
+    description: "Refresh Mafia",
+    result: "success",
+    execStatus: 0,
+  }],
   timers: [{ name: "mafia-update.timer", next: "soon" }],
   processes: [{
     pid: 10,
@@ -68,5 +83,30 @@ describe("VPS telemetry", () => {
     expect(Math.max(...first.map((line) => line.length))).toBeLessThanOrEqual(80);
     expect(first.join("\n")).toContain("claude:?");
     expect(first.join("\n")).toContain("watch update:ok");
+  });
+
+  test("formats the full operations dashboard", () => {
+    const value = formatVpsDashboard(telemetry);
+
+    expect(value).toContain("== DEPLOYMENT ==");
+    expect(value).toContain("HEAD: abc123");
+    expect(value).toContain("== MODEL ROUTING ==");
+    expect(value).toContain("claude fallback is unavailable");
+    expect(value).toContain("== WATCHERS AND SERVICES ==");
+    expect(value).toContain("== PROCESSES - AGENT-RELATED ==");
+  });
+
+  test("alerts when a long-running watcher is inactive", () => {
+    const value = formatVpsDashboard({
+      ...telemetry,
+      units: [{
+        name: "vault-daemon.service",
+        active: "inactive",
+        sub: "dead",
+        description: "Vault daemon",
+      }],
+    });
+
+    expect(value).toContain("vault-daemon.service is inactive/dead");
   });
 });

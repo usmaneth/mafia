@@ -1,4 +1,4 @@
-import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
+import type { ExtensionAPI, ExtensionCommandContext } from "@oh-my-pi/pi-coding-agent";
 import { spawn } from "node:child_process";
 import { join } from "node:path";
 import { formatHub, formatJobs, formatMessages, formatTeam, formatTeams, formatVpsTelemetry, formatVpsWidget } from "../src/format";
@@ -10,6 +10,7 @@ import { TeamService } from "../src/team";
 import { catalogCandidates, filterCatalog, ModelCatalogService } from "../src/models";
 import { recommendParallelism } from "../src/scale";
 import { readVpsTelemetry, refreshVpsTelemetry } from "../src/telemetry";
+import { showVpsDashboard } from "./vps-dashboard";
 
 export default function mafiaExtension(pi: ExtensionAPI) {
   const z = pi.zod;
@@ -472,9 +473,7 @@ MAFIA DESIGN CHECKPOINT POLICY:
     },
   });
 
-  pi.registerCommand("mafia", {
-    description: "Show Mafia teams and workers",
-    handler: async (args, ctx) => {
+  const handleMafiaCommand = async (args: string, ctx: ExtensionCommandContext) => {
       try {
         const text = args.trim();
         if (text.startsWith("team ")) {
@@ -483,21 +482,43 @@ MAFIA DESIGN CHECKPOINT POLICY:
           const teamId = text.slice(4).trim();
           const mafia = new MafiaService();
           const team = new TeamService().get(teamId);
-          ctx.ui.notify(formatHub(team, mafia.list(500), mafia.control.messages({ teamId, limit: 20 })), "info");
+          ctx.ui.notify(formatHub(team, mafia.listCached(500), mafia.control.messages({ teamId, limit: 20 })), "info");
         } else if (text.startsWith("messages ")) {
           const teamId = text.slice(9).trim();
           ctx.ui.notify(formatMessages(new MafiaService().control.messages({ teamId, limit: 30 })), "info");
         } else if (text === "vps" || text.startsWith("vps ")) {
-          const value = readVpsTelemetry() ?? refreshVpsTelemetry(true);
-          ctx.ui.notify(formatVpsTelemetry(value, { allProcesses: text.includes("--all") }), "info");
+          await showVpsDashboard(ctx, { allProcesses: text.includes("--all") });
         } else {
           const teams = formatTeams(new TeamService().list(10));
-          const jobs = formatJobs(new MafiaService().list(20));
+          const jobs = formatJobs(new MafiaService().listCached(20));
           ctx.ui.notify(`${teams}\n\n${jobs}`, "info");
         }
       } catch (error) {
         ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
       }
+  };
+
+  pi.registerCommand("mafia", {
+    description: "Show Mafia teams, workers, or VPS operations",
+    handler: handleMafiaCommand,
+  });
+
+  pi.registerCommand("mafa", {
+    description: "Alias for /mafia",
+    handler: handleMafiaCommand,
+  });
+
+  pi.registerCommand("vps", {
+    description: "Open the Mafia VPS operations dashboard",
+    handler: async (args, ctx) => {
+      await showVpsDashboard(ctx, { allProcesses: args.includes("--all") });
+    },
+  });
+
+  pi.registerCommand("mafia-vps", {
+    description: "Open the Mafia VPS operations dashboard",
+    handler: async (args, ctx) => {
+      await showVpsDashboard(ctx, { allProcesses: args.includes("--all") });
     },
   });
 
@@ -563,9 +584,7 @@ MAFIA DESIGN CHECKPOINT POLICY:
     };
     collectVps();
     refresh();
-    const renderTimer = setInterval(refresh, 2000);
-    const collectorTimer = setInterval(collectVps, 20_000);
-    renderTimer.unref();
-    collectorTimer.unref();
+    ctx.setInterval(refresh, 2000);
+    ctx.setInterval(collectVps, 20_000);
   });
 }

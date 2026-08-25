@@ -308,6 +308,8 @@ export interface VpsUnit {
   active: string;
   sub: string;
   description: string;
+  result?: string;
+  execStatus?: number;
 }
 
 export interface VpsTimer {
@@ -327,6 +329,15 @@ export interface VpsJobSummary {
   error?: string;
 }
 
+export interface VpsDeployment {
+  repoPath: string;
+  branch?: string;
+  sha?: string;
+  originSha?: string;
+  dirty: boolean;
+  dirtyFiles: number;
+}
+
 export interface VpsTelemetry {
   generatedAt: string;
   host: string;
@@ -337,6 +348,7 @@ export interface VpsTelemetry {
   load?: [number, number, number];
   memory?: { usedBytes: number; totalBytes: number; swapUsedBytes: number; swapTotalBytes: number };
   disk?: { usedBytes: number; totalBytes: number; percent: number };
+  deployment?: VpsDeployment;
   jobs: {
     total: number;
     running: number;

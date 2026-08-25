@@ -24,27 +24,40 @@ function jobs(stateRoot: string): JobStatus[] {
 }
 
 function units(): VpsUnit[] {
-  const names = [
+  const required = [
     "mafia-update.timer",
+    "mafia-update.service",
     "provider-auth-monitor.timer",
+    "provider-auth-monitor.service",
     "pr-watch.service",
     "vault-daemon.service",
     "herdr.service",
   ];
+  const discovered = command("systemctl", ["list-unit-files", "--no-legend", "--no-pager"])
+    .split("\n")
+    .map((line) => line.trim().split(/\s+/, 1)[0])
+    .filter((name) => /\.(service|timer)$/.test(name) && /(mafia|watch|monitor|vault|herdr)/i.test(name));
+  const names = [...new Set([...required, ...discovered])];
   return names.map((name) => {
-    const raw = command("systemctl", ["show", name, "--property=ActiveState,SubState,Description"]);
+    const raw = command("systemctl", [
+      "show",
+      name,
+      "--property=ActiveState,SubState,Description,Result,ExecMainStatus",
+    ]);
     const fields = Object.fromEntries(raw.split("\n").map((line) => line.split("=", 2)));
     return {
       name,
       active: fields.ActiveState ?? "unknown",
       sub: fields.SubState ?? "unknown",
       description: fields.Description ?? "",
+      result: fields.Result || undefined,
+      execStatus: fields.ExecMainStatus ? Number(fields.ExecMainStatus) : undefined,
     };
   });
 }
 
-function timers(): VpsTimer[] {
-  const names = ["mafia-update.timer", "provider-auth-monitor.timer"];
+function timers(unitList: VpsUnit[]): VpsTimer[] {
+  const names = unitList.filter((unit) => unit.name.endsWith(".timer")).map((unit) => unit.name);
   return names.map((name) => {
     const fieldsRaw = command("systemctl", ["show", name, "--property=LastTriggerUSec,Unit"]);
     const fields = Object.fromEntries(fieldsRaw.split("\n").map((line) => line.split("=", 2)));
@@ -60,7 +73,7 @@ function timers(): VpsTimer[] {
 
 function processes(): VpsProcess[] {
   const raw = command("ps", ["-eo", "pid=,user=,stat=,etimes=,%cpu=,%mem=,args=", "--sort=-%cpu"]);
-  return raw.split("\n").filter(Boolean).slice(0, 200).flatMap((line) => {
+  return raw.split("\n").filter(Boolean).flatMap((line) => {
     const match = line.trim().match(/^(\d+)\s+(\S+)\s+(\S+)\s+(\d+)\s+([\d.]+)\s+([\d.]+)\s+(.+)$/);
     if (!match) return [];
     return [{
@@ -77,6 +90,7 @@ function processes(): VpsProcess[] {
 
 function main(): void {
   const stateRoot = join(homedir(), ".local", "share", "mafia");
+  const repoPath = "/home/usman/mafia";
   const allJobs = jobs(stateRoot);
   const byHarness: Record<string, number> = {};
   for (const job of allJobs.filter((item) => ["queued", "starting", "running"].includes(item.state))) {
@@ -95,6 +109,8 @@ function main(): void {
   const diskRaw = command("df", ["-B1", "--output=size,used,pcent", "/"]).split("\n").at(-1)?.trim().split(/\s+/) ?? [];
   const load = readFileSync("/proc/loadavg", "utf8").split(/\s+/).slice(0, 3).map(Number) as [number, number, number];
   const uptimeSeconds = Number(readFileSync("/proc/uptime", "utf8").split(/\s+/)[0]);
+  const unitList = units();
+  const dirtyFiles = command("git", ["-C", repoPath, "status", "--porcelain"]).split("\n").filter(Boolean).length;
   const telemetry: VpsTelemetry = {
     generatedAt: new Date().toISOString(),
     host: command("hostname", []),
@@ -112,6 +128,14 @@ function main(): void {
       totalBytes: Number(diskRaw[0] ?? 0),
       usedBytes: Number(diskRaw[1] ?? 0),
       percent: Number((diskRaw[2] ?? "0").replace("%", "")),
+    },
+    deployment: {
+      repoPath,
+      branch: command("git", ["-C", repoPath, "branch", "--show-current"]) || undefined,
+      sha: command("git", ["-C", repoPath, "rev-parse", "--short=12", "HEAD"]) || undefined,
+      originSha: command("git", ["-C", repoPath, "rev-parse", "--short=12", "origin/master"]) || undefined,
+      dirty: dirtyFiles > 0,
+      dirtyFiles,
     },
     jobs: {
       total: allJobs.length,
@@ -135,8 +159,8 @@ function main(): void {
       sources: catalog?.sources ?? [],
       fallbackOrder: ["codex", "claude", "omp", "opencode", "kimi", "cline"],
     },
-    units: units(),
-    timers: timers(),
+    units: unitList,
+    timers: timers(unitList),
     processes: processes(),
   };
   console.log(JSON.stringify(telemetry));
