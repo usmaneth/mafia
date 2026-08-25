@@ -5,6 +5,8 @@ import { routeTask } from "../src/router";
 import { loadConfig } from "../src/config";
 import { MafiaService } from "../src/service";
 import { TeamService } from "../src/team";
+import { catalogCandidates, filterCatalog, ModelCatalogService } from "../src/models";
+import { recommendParallelism } from "../src/scale";
 
 export default function mafiaExtension(pi: ExtensionAPI) {
   const z = pi.zod;
@@ -32,7 +34,9 @@ MAFIA DESIGN CHECKPOINT POLICY:
     parameters: z.object({
       name: z.string().describe("Short team name."),
       goal: z.string().describe("The shared outcome for the complete team."),
-      maxParallel: z.number().int().min(1).max(128).default(16),
+      maxParallel: z.number().int().min(1).max(128).optional().default(128),
+      minParallel: z.number().int().min(1).max(128).optional().default(1),
+      autoScale: z.boolean().optional().default(true),
       tasks: z.array(z.object({
         id: z.string().describe("Stable task ID."),
         title: z.string().optional(),
@@ -69,6 +73,8 @@ MAFIA DESIGN CHECKPOINT POLICY:
       const team = new TeamService().create(params.goal, {
         name: params.name,
         maxParallel: params.maxParallel,
+        minParallel: params.minParallel,
+        autoScale: params.autoScale,
         tasks: params.tasks,
         budget: params.budget,
       });
@@ -192,12 +198,54 @@ MAFIA DESIGN CHECKPOINT POLICY:
     }),
     async execute(_toolCallId, rawParams) {
       const params = rawParams as any;
-      const value = routeTask(loadConfig(), {
+      const config = loadConfig();
+      const value = routeTask(config, {
         capability: params.capability,
         host: params.host,
         preferredModels: params.preferredModels,
         downgrade: params.cheap,
-      });
+      }, new Map(), catalogCandidates(new ModelCatalogService(config.stateRoot).discover(), Object.keys(config.hosts)));
+      return { content: [{ type: "text", text: JSON.stringify(value, null, 2) }], details: value };
+    },
+  });
+
+  pi.registerTool({
+    name: "mafia_models",
+    label: "Mafia Model Catalog",
+    description: "Search every model currently exposed by the configured provider harnesses.",
+    parameters: z.object({
+      harness: z.enum(["claude", "codex", "kimi", "cline", "opencode", "omp"]).optional(),
+      provider: z.string().optional(),
+      query: z.string().optional(),
+      limit: z.number().int().min(1).max(2000).optional().default(50),
+      refresh: z.boolean().optional().default(false),
+    }),
+    async execute(_toolCallId, rawParams) {
+      const params = rawParams as any;
+      const config = loadConfig();
+      const catalog = new ModelCatalogService(config.stateRoot).discover(params.refresh);
+      const value = filterCatalog(catalog, params);
+      return {
+        content: [{ type: "text", text: JSON.stringify(value, null, 2) }],
+        details: { generatedAt: catalog.generatedAt, total: catalog.models.length, matches: value.models.length, sources: catalog.sources },
+      };
+    },
+  });
+
+  pi.registerTool({
+    name: "mafia_scale_plan",
+    label: "Plan Mafia Scale",
+    description: "Calculate justified team concurrency from the task graph, host capacity, failures, risk, and budget.",
+    parameters: z.object({
+      taskCount: z.number().int().min(1).max(128),
+      readyCount: z.number().int().min(0).max(128).optional(),
+      completed: z.number().int().min(0).max(128).optional(),
+      failures: z.number().int().min(0).max(128).optional(),
+      risk: z.enum(["low", "medium", "high"]).optional(),
+      maxParallel: z.number().int().min(1).max(128).optional(),
+    }),
+    async execute(_toolCallId, rawParams) {
+      const value = recommendParallelism(rawParams as any);
       return { content: [{ type: "text", text: JSON.stringify(value, null, 2) }], details: value };
     },
   });

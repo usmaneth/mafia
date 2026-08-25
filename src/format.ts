@@ -50,7 +50,7 @@ export function formatTeam(team: TeamStatus): string {
     `${team.name} (${team.id})`,
     `state: ${team.state}`,
     `goal: ${team.goal}`,
-    `parallel limit: ${team.maxParallel}`,
+    `parallel: ${team.currentParallel ?? team.maxParallel}/${team.maxParallel}${team.autoScale !== false ? " - auto" : " - fixed"}`,
     `paused: ${team.paused ? "yes" : "no"}`,
     `budget: ${budget.percent.toFixed(1)}%${budget.downgrade ? " - downgrade" : ""}${budget.stop ? " - stopped" : ""}`,
     "",

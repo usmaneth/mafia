@@ -9,6 +9,9 @@ import { MafiaService } from "./service";
 import { TeamService } from "./team";
 import { protocolSpec } from "./protocols";
 import { routeTask } from "./router";
+import { catalogCandidates, filterCatalog, ModelCatalogService } from "./models";
+import { recommendParallelism } from "./scale";
+import { installUpdateAutomation, updateMafia } from "./updater";
 import { teamProtocolNames, type JobState, type MessageType, type PipelineSpec, type TeamProtocolName } from "./types";
 
 function option(args: string[], name: string): string | undefined {
@@ -60,6 +63,10 @@ usage:
   mafia decision TEAM --question TEXT --selected TEXT
   mafia events [--team TEAM] [--job JOB]
   mafia route --capability TYPE [--host HOST]
+  mafia models [--harness NAME] [--provider NAME] [--find TEXT] [--refresh] [--json]
+  mafia scale --tasks N [--ready N] [--risk low|medium|high]
+  mafia update [--push] [--deploy]
+  mafia install-updater
   mafia budget TEAM
   mafia protocol start NAME --goal TEXT [--repo PATH]
   mafia sync [--discover]
@@ -77,7 +84,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   const controlCommands = new Set([
     "help", "-h", "--help", "jobs", "status", "watch", "dispatch", "logs", "cancel", "handoff", "compare",
     "team", "hub", "message", "decisions", "decision", "events", "route", "budget", "protocol",
-    "sync", "hosts", "install-remote", "eval", "__team-run", "doctor",
+    "sync", "hosts", "install-remote", "eval", "__team-run", "doctor", "models", "scale", "update", "install-updater",
   ]);
   if (!command || command === "shell" || command === "run" || !controlCommands.has(command)) {
     const { spawnSync } = await import("node:child_process");
@@ -249,7 +256,40 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
         capability: (option(args, "--capability") ?? "general") as any,
         host: option(args, "--host"),
         downgrade: has(args, "--cheap"),
+      }, new Map(), catalogCandidates(new ModelCatalogService(loadConfig().stateRoot).discover(), Object.keys(loadConfig().hosts))));
+      return;
+    case "models": {
+      const catalog = new ModelCatalogService(mafia.config.stateRoot).discover(has(args, "--refresh"));
+      const filtered = filterCatalog(catalog, {
+        harness: option(args, "--harness") as any,
+        provider: option(args, "--provider"),
+        query: option(args, "--find"),
+        limit: Number(option(args, "--limit") ?? 50),
+      });
+      if (has(args, "--json")) printJson(filtered);
+      else {
+        console.log(`catalog: ${catalog.models.length} models - ${catalog.generatedAt}`);
+        console.log(catalog.sources.map((source) => `${source.harness}: ${source.status} (${source.count})${source.error ? ` - ${source.error}` : ""}`).join("\n"));
+        console.log("");
+        console.log(filtered.models.map((model) => `${model.harness}\t${model.provider}\t${model.selector}\t${model.name}`).join("\n") || "no matching models");
+      }
+      return;
+    }
+    case "scale":
+      printJson(recommendParallelism({
+        taskCount: Number(required(option(args, "--tasks"), "--tasks is required.")),
+        readyCount: option(args, "--ready") ? Number(option(args, "--ready")) : undefined,
+        completed: option(args, "--completed") ? Number(option(args, "--completed")) : undefined,
+        failures: option(args, "--failures") ? Number(option(args, "--failures")) : undefined,
+        maxParallel: option(args, "--max") ? Number(option(args, "--max")) : undefined,
+        risk: option(args, "--risk") as any,
       }));
+      return;
+    case "update":
+      printJson(updateMafia({ push: has(args, "--push"), deploy: has(args, "--deploy") }));
+      return;
+    case "install-updater":
+      printJson(installUpdateAutomation());
       return;
     case "budget": {
       const team = teams.get(required(args[0], "The team ID is required."));

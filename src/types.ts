@@ -100,6 +100,8 @@ export interface PipelineTask {
 export interface PipelineSpec {
   name: string;
   maxParallel?: number;
+  minParallel?: number;
+  autoScale?: boolean;
   tasks: PipelineTask[];
   budget?: TeamBudget;
   protocol?: TeamProtocolName;
@@ -120,6 +122,9 @@ export interface TeamStatus {
   goal: string;
   state: "queued" | "running" | "succeeded" | "failed" | "cancelled";
   maxParallel: number;
+  currentParallel?: number;
+  minParallel?: number;
+  autoScale?: boolean;
   createdAt: string;
   updatedAt: string;
   completedAt?: string;
@@ -233,6 +238,59 @@ export interface RoutingCandidate {
   latency: number;
   contextTokens?: number;
   provider?: string;
+}
+
+export interface ModelRecord {
+  harness: HarnessName;
+  provider: string;
+  id: string;
+  selector: string;
+  name: string;
+  source: HarnessName;
+  available: boolean;
+  contextWindow?: number;
+  maxTokens?: number;
+  reasoning?: boolean;
+  input?: string[];
+  aliases?: string[];
+  cost?: {
+    input: number;
+    output: number;
+    cacheRead?: number;
+    cacheWrite?: number;
+  };
+}
+
+export interface ModelCatalogSource {
+  harness: HarnessName;
+  status: "ok" | "error";
+  count: number;
+  error?: string;
+}
+
+export interface ModelCatalog {
+  generatedAt: string;
+  models: ModelRecord[];
+  sources: ModelCatalogSource[];
+}
+
+export interface ScaleInput {
+  taskCount: number;
+  readyCount?: number;
+  running?: number;
+  completed?: number;
+  failures?: number;
+  hostCapacity?: number;
+  budgetWorkers?: number;
+  minParallel?: number;
+  maxParallel?: number;
+  risk?: "low" | "medium" | "high";
+}
+
+export interface ScaleDecision {
+  recommendedParallel: number;
+  ceiling: number;
+  reasons: string[];
 }
 
 export interface RoutingConfig {

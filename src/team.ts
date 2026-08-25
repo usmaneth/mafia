@@ -8,6 +8,8 @@ import { MafiaService } from "./service";
 import { buildContextPack } from "./context";
 import { formatPacket } from "./packet";
 import { routeTask } from "./router";
+import { catalogCandidates, ModelCatalogService } from "./models";
+import { recommendParallelism } from "./scale";
 import type {
   DecisionRecord,
   PipelineSpec,
@@ -25,6 +27,7 @@ const terminalStates = new Set(["succeeded", "failed", "blocked", "cancelled"]);
 export class TeamService {
   private readonly mafia = new MafiaService();
   private readonly teamsRoot = join(this.mafia.config.stateRoot, "teams");
+  private readonly models = new ModelCatalogService(this.mafia.config.stateRoot);
 
   constructor() {
     mkdirSync(this.teamsRoot, { recursive: true });
@@ -39,7 +42,10 @@ export class TeamService {
       name: spec.name,
       goal,
       state: "queued",
-      maxParallel: Math.min(128, Math.max(1, spec.maxParallel ?? 16)),
+      maxParallel: Math.min(128, Math.max(1, spec.maxParallel ?? 128)),
+      currentParallel: 1,
+      minParallel: Math.min(128, Math.max(1, spec.minParallel ?? 1)),
+      autoScale: spec.autoScale ?? true,
       createdAt: now,
       updatedAt: now,
       tasks: spec.tasks.map((task) => ({ ...task, state: "waiting", attempts: 0 })),
@@ -143,7 +149,23 @@ export class TeamService {
         const host = task.host ?? this.mafia.config.defaultHost;
         hostCounts.set(host, (hostCounts.get(host) ?? 0) + 1);
       }
-      const slots = Math.max(0, team.maxParallel - running);
+      const completed = team.tasks.filter((task) => terminalStates.has(task.state)).length;
+      const failures = team.tasks.filter((task) => ["failed", "blocked", "cancelled"].includes(task.state)).length;
+      const hostCapacity = Object.values(this.mafia.config.hosts)
+        .reduce((sum, host) => sum + (host.maxParallel ?? 16), 0);
+      const scale = recommendParallelism({
+        taskCount: team.tasks.length,
+        readyCount: ready.length,
+        running,
+        completed,
+        failures,
+        hostCapacity,
+        budgetWorkers: team.budget?.maxWorkers,
+        minParallel: team.minParallel,
+        maxParallel: team.maxParallel,
+      });
+      team.currentParallel = team.autoScale !== false ? scale.recommendedParallel : team.maxParallel;
+      const slots = Math.max(0, team.currentParallel - running);
       let dispatched = 0;
       if (ready.length && running === 0) {
         team.checkpointId = this.checkpoint(team.id, `wave-${new Date().toISOString()}`).id;
@@ -157,7 +179,10 @@ export class TeamService {
               preferredModels: task.preferredModels,
               host: task.host,
               downgrade: budget.downgrade,
-            }, this.mafia.store.routingHistory());
+            }, this.mafia.store.routingHistory(), catalogCandidates(
+              this.models.discover(),
+              Object.keys(this.mafia.config.hosts),
+            ));
         if (route) {
           task.harness = route.harness;
           task.host = route.host;
@@ -547,7 +572,7 @@ export function validatePipeline(spec: PipelineSpec): void {
     throw new Error("A team must contain 1 to 128 tasks.");
   }
   const ids = new Set<string>();
-    for (const task of spec.tasks) {
+  for (const task of spec.tasks) {
     if (!task.id.match(/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/)) {
       throw new Error(`Invalid task ID: ${task.id}`);
     }

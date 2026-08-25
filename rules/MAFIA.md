@@ -49,6 +49,26 @@ checkpoint, or restore team work.
 
 Use `mafia_route` when a task does not require a specific model.
 
+Use `mafia_models` to search the live model catalog.
+
+Do not assume that one model represents a provider.
+
+Refresh the catalog when a provider announces or grants access to a new model.
+
+Use `mafia_scale_plan` before a broad team starts.
+
+Set auto-scale for normal teams.
+
+Use one worker for one bounded task.
+
+Use 2 to 8 workers for a normal multi-part task.
+
+Use 8 to 32 workers for a broad review or migration.
+
+Use 32 to 128 workers only when the graph has enough independent tasks.
+
+Do not create workers only to reach a large worker count.
+
 Set a team budget for a large team.
 
 Use a Mafia protocol for common team patterns.

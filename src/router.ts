@@ -17,8 +17,9 @@ export function routeTask(
   config: MafiaConfig,
   input: RouteInput,
   history: Map<string, UsageMetrics> = new Map(),
+  discovered?: RoutingCandidate[],
 ): RouteDecision {
-  const candidates = (config.routing?.candidates ?? defaultCandidates()).filter((candidate) => {
+  const candidates = (discovered?.length ? discovered : config.routing?.candidates ?? defaultCandidates()).filter((candidate) => {
     if (!candidate.enabled) return false;
     if (input.host && candidate.host !== input.host) return false;
     if (input.preferredModels?.length && candidate.model && !input.preferredModels.includes(candidate.model)) return false;
