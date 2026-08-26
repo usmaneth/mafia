@@ -8,7 +8,7 @@ import {
   formatVpsTelemetry,
   formatVpsWidget,
 } from "../src/format";
-import type { VpsTelemetry } from "../src/types";
+import type { JobStatus, VpsTelemetry } from "../src/types";
 
 const telemetry: VpsTelemetry = {
   generatedAt: new Date().toISOString(),
@@ -92,10 +92,36 @@ describe("VPS telemetry", () => {
       timeoutSeconds: 60,
       logPath: "/tmp/output.log",
     }));
-    expect(formatAgentWidget(jobs)).toContain("Agents 1 active | VPS 1");
+    expect(formatAgentWidget(jobs)).toBe("Agents 1 | Codex - GPT-5.5 @ VPS");
     expect(formatAgentDashboard(jobs, "active")).toContain("Implement API");
     expect(formatAgentDashboard(jobs, "active")).toContain("Codex - GPT-5.5");
     expect(formatAgentDashboard(jobs, "active", { selectedId: "job-1" })).toContain("> Codex - GPT-5.5");
+  });
+
+  test("keeps the basic UI compact for a large active team", () => {
+    const now = new Date().toISOString();
+    const jobs = [
+      { harness: "codex", model: "gpt-5.6-sol", host: "vps" },
+      { harness: "claude", model: "claude-opus-5", host: "local" },
+      { harness: "kimi", model: "kimi-k3", host: "vps" },
+    ] as const satisfies ReadonlyArray<Pick<JobStatus, "harness" | "model" | "host">>;
+    const activeJobs: JobStatus[] = jobs.map((job, index) => ({
+      ...job,
+      id: `job-${index}`,
+      title: `worker ${index}`,
+      prompt: "work",
+      isolate: false,
+      labels: [],
+      createdAt: now,
+      updatedAt: now,
+      stateRoot: "/tmp/mafia",
+      timeoutSeconds: 60,
+      state: "running" as const,
+      logPath: `/tmp/job-${index}.log`,
+    }));
+
+    expect(formatAgentWidget(activeJobs))
+      .toBe("Agents 3 | Codex - GPT-5.6 Sol @ VPS | Claude Code - Opus 5 @ local | +1");
   });
 
   test("formats the selected agent model and operational details", () => {

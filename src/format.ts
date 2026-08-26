@@ -81,9 +81,13 @@ export function formatAgentWidget(jobs: JobStatus[]): string {
   const active = jobs.filter(isActiveAgent);
   const failed = jobs.filter((job) =>
     job.state === "failed" && Date.now() - new Date(job.updatedAt).getTime() < 60 * 60 * 1000);
-  const remote = active.filter((job) => job.host !== "local").length;
-  const local = active.length - remote;
-  return `Agents ${active.length} active | VPS ${remote} | local ${local}${failed.length ? ` | ${failed.length} failed` : ""}`;
+  if (!active.length) return `Agents idle${failed.length ? ` | ${failed.length} failed` : ""}`;
+
+  const visible = active.slice(0, 2).map((job) =>
+    `${agentDisplayName(job)} @ ${job.host === "local" ? "local" : job.host.toUpperCase()}`);
+  const remaining = active.length - visible.length;
+  return `Agents ${active.length} | ${visible.join(" | ")}${remaining ? ` | +${remaining}` : ""}` +
+    `${failed.length ? ` | ${failed.length} failed` : ""}`;
 }
 
 export function formatAgentDashboard(
