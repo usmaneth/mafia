@@ -44,6 +44,7 @@ export interface JobSpec {
   repo?: string;
   cwd?: string;
   model?: string;
+  modelSource?: "requested" | "configured" | "detected" | "observed";
   baseRef?: string;
   isolate: boolean;
   parentId?: string;

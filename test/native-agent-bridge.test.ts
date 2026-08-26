@@ -41,6 +41,7 @@ describe("native agent bridge", () => {
     expect(ref.displayName).toBe("VPS - Review the transport");
     expect(ref.status).toBe("running");
     expect(ref.history?.resolvedModel).toBe("gpt-5.6-luna-pro");
+    expect(ref.history?.outputPath).toBe("/tmp/mafia/output.log");
   });
 
   test("keeps all active workers and only recent completed workers", () => {

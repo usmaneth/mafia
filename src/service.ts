@@ -21,6 +21,7 @@ import { extractHarnessResult } from "./result";
 import { buildHandoffPacket } from "./packet";
 import { ControlPlane } from "./control";
 import { ModelCatalogService, resolveCatalogModel } from "./models";
+import { detectHarnessModel } from "./harness-model";
 import type {
   ArtifactRef,
   HarnessName,
@@ -60,6 +61,7 @@ export class MafiaService {
   dispatch(input: DispatchInput): JobStatus {
     let harness = input.harness;
     let model = input.model;
+    let modelSource: JobSpec["modelSource"] = model ? "requested" : undefined;
     if (model) {
       try {
         const selected = resolveCatalogModel(
@@ -76,6 +78,17 @@ export class MafiaService {
     harness ??= this.config.defaultHarness;
     if (!isHarnessName(harness)) throw new Error(`Unknown harness: ${harness}`);
     const host = resolveHost(this.config, input.host);
+    const configuredModel = this.config.harnessModels?.[harness];
+    if (!model && configuredModel) {
+      model = configuredModel;
+      modelSource = "configured";
+    }
+    if (!model) {
+      model = detectHarnessModel(harness, {
+        catalog: this.models.cached(),
+      });
+      if (model) modelSource = "detected";
+    }
     const id = createId();
     const createdAt = new Date().toISOString();
     const spec: JobSpec = {
@@ -86,7 +99,8 @@ export class MafiaService {
       host: host.name,
       repo: input.repo,
       cwd: input.cwd,
-      model: model ?? this.config.harnessModels?.[harness],
+      model,
+      modelSource,
       baseRef: input.baseRef,
       isolate: input.isolate ?? Boolean(input.repo),
       parentId: input.parentId,

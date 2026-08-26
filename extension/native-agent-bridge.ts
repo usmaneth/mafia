@@ -66,6 +66,7 @@ export class NativeAgentBridge {
           resolvedModel: job.model,
           metrics: agentRegistryMetrics(job.usage),
           branchName: job.branch,
+          outputPath: job.logPath,
         };
         let ref = this.#registry.get(id);
         if (!ref) {

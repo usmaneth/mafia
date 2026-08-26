@@ -1,6 +1,13 @@
 import { describe, expect, test } from "bun:test";
 import { agentDisplayName, modelDisplayName } from "../src/agent-display";
-import { formatAgentDashboard, formatAgentWidget, formatVpsDashboard, formatVpsTelemetry, formatVpsWidget } from "../src/format";
+import {
+  formatAgentDashboard,
+  formatAgentDetail,
+  formatAgentWidget,
+  formatVpsDashboard,
+  formatVpsTelemetry,
+  formatVpsWidget,
+} from "../src/format";
 import type { VpsTelemetry } from "../src/types";
 
 const telemetry: VpsTelemetry = {
@@ -88,6 +95,50 @@ describe("VPS telemetry", () => {
     expect(formatAgentWidget(jobs)).toContain("Agents 1 active | VPS 1");
     expect(formatAgentDashboard(jobs, "active")).toContain("Implement API");
     expect(formatAgentDashboard(jobs, "active")).toContain("Codex - GPT-5.5");
+    expect(formatAgentDashboard(jobs, "active", { selectedId: "job-1" })).toContain("> Codex - GPT-5.5");
+  });
+
+  test("formats the selected agent model and operational details", () => {
+    const now = new Date().toISOString();
+    const detail = formatAgentDetail({
+      id: "job-detail",
+      title: "Review the transport",
+      prompt: "review",
+      harness: "claude",
+      host: "vps",
+      model: "claude-opus-5",
+      modelSource: "observed",
+      isolate: true,
+      labels: [],
+      createdAt: now,
+      updatedAt: now,
+      stateRoot: "/tmp/mafia",
+      timeoutSeconds: 60,
+      state: "running",
+      pid: 4512,
+      branch: "mafia/job-detail",
+      command: ["claude", "-p", "review"],
+      logPath: "/tmp/mafia/output.log",
+      usage: {
+        inputTokens: 100,
+        outputTokens: 25,
+        cacheReadTokens: 50,
+        cacheWriteTokens: 0,
+        costUsd: 0.12,
+        requests: 1,
+        failures: 0,
+        runtimeSeconds: 5,
+      },
+    }, 'worker started\n{"type":"item.completed","item":{"type":"agent_message","text":"checking files"}}');
+
+    expect(detail).toContain("Claude Code - Opus 5");
+    expect(detail).toContain("Model source: observed");
+    expect(detail).toContain("PID: 4512");
+    expect(detail).toContain("Branch: mafia/job-detail");
+    expect(detail).toContain("125 total");
+    expect(detail).toContain("checking files");
+    expect(detail).toContain("[prompt omitted]");
+    expect(detail).not.toContain("claude -p review");
   });
 
   test("formats the operational summary and relevant processes", () => {

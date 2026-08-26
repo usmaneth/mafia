@@ -67,6 +67,16 @@ export function formatTeam(team: TeamStatus): string {
 
 export type AgentDashboardFilter = "all" | "active" | "failed" | "vps" | "local";
 
+export function agentDashboardJobs(jobs: JobStatus[], filter: AgentDashboardFilter): JobStatus[] {
+  return jobs.filter((job) => {
+    if (filter === "active") return isActiveAgent(job);
+    if (filter === "failed") return job.state === "failed";
+    if (filter === "vps") return job.host !== "local";
+    if (filter === "local") return job.host === "local";
+    return true;
+  });
+}
+
 export function formatAgentWidget(jobs: JobStatus[]): string {
   const active = jobs.filter(isActiveAgent);
   const failed = jobs.filter((job) =>
@@ -76,14 +86,12 @@ export function formatAgentWidget(jobs: JobStatus[]): string {
   return `Agents ${active.length} active | VPS ${remote} | local ${local}${failed.length ? ` | ${failed.length} failed` : ""}`;
 }
 
-export function formatAgentDashboard(jobs: JobStatus[], filter: AgentDashboardFilter = "all"): string {
-  const selected = jobs.filter((job) => {
-    if (filter === "active") return isActiveAgent(job);
-    if (filter === "failed") return job.state === "failed";
-    if (filter === "vps") return job.host !== "local";
-    if (filter === "local") return job.host === "local";
-    return true;
-  });
+export function formatAgentDashboard(
+  jobs: JobStatus[],
+  filter: AgentDashboardFilter = "all",
+  options: { selectedId?: string } = {},
+): string {
+  const selected = agentDashboardJobs(jobs, filter);
   const active = jobs.filter(isActiveAgent);
   const heartbeat = (job: JobStatus): string => job.heartbeatAt ? age(job.heartbeatAt) : age(job.updatedAt);
   const lines = [
@@ -101,12 +109,116 @@ export function formatAgentDashboard(jobs: JobStatus[], filter: AgentDashboardFi
     `${fit("SUBAGENT", 34)} ${fit("HOST", 7)} ${fit("STATE", 10)} ${fit("BEAT", 6)} TASK`,
   ];
   for (const job of selected) {
+    const cursor = job.id === options.selectedId ? "> " : "  ";
     lines.push(
-      `${fit(agentDisplayName(job), 34)} ${fit(job.host.toUpperCase(), 7)} ${fit(job.state, 10)} ` +
+      `${cursor}${fit(agentDisplayName(job), 34)} ${fit(job.host.toUpperCase(), 7)} ${fit(job.state, 10)} ` +
       `${fit(heartbeat(job), 6)} ${job.title}${job.error ? ` | ${job.error}` : ""}`,
     );
   }
   if (!selected.length) lines.push("No agents match this view.");
+  return lines.join("\n");
+}
+
+function metric(value: number): string {
+  return new Intl.NumberFormat("en-US", { maximumFractionDigits: 1, notation: "compact" }).format(value);
+}
+
+function oneLine(value?: string, limit = 500): string {
+  if (!value) return "-";
+  const clean = value
+    .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")
+    .replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  return clean.length > limit ? `${clean.slice(0, limit - 1)}~` : clean;
+}
+
+function logLine(value: string): string {
+  try {
+    const event = JSON.parse(value) as Record<string, any>;
+    const model = event.message?.model ?? event.item?.model ?? event.response?.model ?? event.model;
+    const text = event.item?.text
+      ?? event.message?.content?.find?.((part: any) => part?.type === "text")?.text
+      ?? event.result;
+    const tool = event.item?.name ?? event.name;
+    const type = event.subtype ?? event.item?.type ?? event.type ?? "event";
+    if (typeof text === "string" && text.trim()) return `[${type}] ${oneLine(text, 900)}`;
+    if (typeof tool === "string" && tool.trim()) return `[${type}] ${tool}`;
+    if (typeof model === "string" && model.trim()) return `[${type}] model ${model}`;
+    if (typeof event.estimated_tokens === "number") return `[${type}] ${event.estimated_tokens} tokens`;
+    return `[${type}]`;
+  } catch {
+    return oneLine(value, 1000);
+  }
+}
+
+export function formatAgentDetail(job: JobStatus, logs = ""): string {
+  const usage = job.usage;
+  const command = job.command?.length
+    ? job.command
+      .slice(0, Math.min(job.command.length, 12))
+      .map((part) => part === job.prompt ? "[prompt omitted]" : oneLine(part, 80))
+      .join(" ")
+    : "-";
+  const lines = [
+    agentDisplayName(job),
+    `${job.state.toUpperCase()} | ${job.host.toUpperCase()} | heartbeat ${job.heartbeatAt ? age(job.heartbeatAt) : age(job.updatedAt)} ago`,
+    "",
+    "== IDENTITY ==",
+    `Job: ${job.id}`,
+    `Harness: ${job.harness}`,
+    `Model: ${job.model ?? "not resolved"}`,
+    `Model source: ${job.modelSource ?? "unknown"}`,
+    `Parent: ${job.parentId ?? "OMP lead"}`,
+    `Team: ${job.pipelineId ?? "-"}`,
+    `Task ID: ${job.taskId ?? "-"}`,
+    "",
+    "== WORK ==",
+    `Title: ${oneLine(job.title)}`,
+    `Repository: ${job.repo ?? "-"}`,
+    `Requested cwd: ${job.cwd ?? "-"}`,
+    `Worktree: ${job.worktree ?? "-"}`,
+    `Branch: ${job.branch ?? "-"}`,
+    `Base ref: ${job.baseRef ?? "-"}`,
+    `PID: ${job.pid ?? "-"}`,
+    `Command: ${command}`,
+    "",
+    "== TIMING ==",
+    `Created: ${job.createdAt}`,
+    `Started: ${job.startedAt ?? "-"}`,
+    `Updated: ${job.updatedAt}`,
+    `Heartbeat: ${job.heartbeatAt ?? "-"}`,
+    `Completed: ${job.completedAt ?? "-"}`,
+    "",
+    "== USAGE ==",
+    ...(usage
+      ? [
+        `Tokens: ${metric(usage.inputTokens + usage.outputTokens)} total | ${metric(usage.inputTokens)} in | ${metric(usage.outputTokens)} out`,
+        `Cache: ${metric(usage.cacheReadTokens)} read | ${metric(usage.cacheWriteTokens)} write`,
+        `Requests: ${usage.requests} | failures: ${usage.failures} | runtime: ${usage.runtimeSeconds.toFixed(1)}s`,
+        `Cost: $${usage.costUsd.toFixed(4)} | TTFT: ${usage.ttftMs === undefined ? "-" : `${usage.ttftMs}ms`}`,
+      ]
+      : ["No usage report yet."]),
+    "",
+    "== OUTCOME ==",
+    `Exit code: ${job.exitCode ?? "-"}`,
+    `Error: ${oneLine(job.error)}`,
+    `Git: ${oneLine(job.gitSummary)}`,
+    `Result: ${oneLine(job.result, 1200)}`,
+    "",
+    "== ARTIFACTS ==",
+    `Log: ${job.logPath}`,
+    `Context pack: ${job.contextPackPath ?? "-"}`,
+    `Workspace patch: ${job.workspacePatchPath ?? "-"}`,
+    `Workspace archive: ${job.workspaceArchivePath ?? "-"}`,
+    ...(job.packet?.evidence ?? []).map((artifact) =>
+      `${artifact.kind ?? "artifact"}: ${artifact.path}${artifact.description ? ` | ${artifact.description}` : ""}`),
+    "",
+    "== LIVE LOG TAIL ==",
+    ...(logs.trim()
+      ? logs.split("\n").slice(-40).map(logLine)
+      : ["No log output loaded."]),
+  ];
   return lines.join("\n");
 }
 

@@ -116,7 +116,7 @@ function prepareWorkspace() {
 }
 
 function commandFor(cwd) {
-  const model = spec.model;
+  const model = spec.modelSource === "detected" ? undefined : spec.model;
   switch (spec.harness) {
     case "claude":
       return ["claude", [
@@ -292,6 +292,7 @@ try {
   const output = [];
   let outputBytes = 0;
   let observedModel = spec.model;
+  let hasObservedModel = false;
   child = spawn(command, args, {
     cwd,
     env: {
@@ -325,9 +326,10 @@ try {
           const payload = JSON.parse(line);
           collectUsage(payload);
           const model = servedModel(payload);
-          if (model && model !== observedModel) {
+          if (model && (!hasObservedModel || model !== observedModel)) {
             observedModel = model;
-            writeStatus({ model });
+            hasObservedModel = true;
+            writeStatus({ model, modelSource: "observed" });
             event("worker.model", { model });
           }
         } catch {}
