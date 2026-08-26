@@ -76,6 +76,35 @@ function event(type, data = {}) {
   appendFileSync(auditPath, `${JSON.stringify(value)}\n`);
 }
 
+function detectedHarnessModel() {
+  const home = homedir();
+  try {
+    if (spec.harness === "codex") {
+      const path = join(home, ".codex", "config.toml");
+      if (!existsSync(path)) return undefined;
+      return readFileSync(path, "utf8").match(/^\s*model\s*=\s*["']([^"']+)["']/m)?.[1];
+    }
+    if (spec.harness === "claude") {
+      const path = join(home, ".claude", "settings.json");
+      if (!existsSync(path)) return undefined;
+      const model = JSON.parse(readFileSync(path, "utf8"))?.model;
+      return typeof model === "string" ? model.replace(/\[[^\]]+\]$/, "").trim() : undefined;
+    }
+    if (spec.harness === "cline") {
+      const path = join(home, ".cline", "data", "settings", "providers.json");
+      if (!existsSync(path)) return undefined;
+      const providers = JSON.parse(readFileSync(path, "utf8"))?.providers;
+      return providers?.cline?.settings?.model ?? providers?.["cline-pass"]?.settings?.model;
+    }
+    if (spec.harness === "omp") {
+      const path = join(home, ".omp", "profiles", "mafia", "agent", "config.yml");
+      if (!existsSync(path)) return undefined;
+      return readFileSync(path, "utf8").match(/^\s*default:\s*["']?([^"'#\s]+)["']?/m)?.[1];
+    }
+  } catch {}
+  return undefined;
+}
+
 function git(args, cwd) {
   const result = spawnSync("git", args, { cwd, encoding: "utf8" });
   if (result.status !== 0) {
@@ -279,6 +308,13 @@ process.on("SIGTERM", () => stop("SIGTERM"));
 process.on("SIGINT", () => stop("SIGINT"));
 
 try {
+  if (spec.modelSource === "detected") {
+    const model = detectedHarnessModel();
+    if (model) {
+      spec.model = model;
+      writeStatus({ model, modelSource: "detected" });
+    }
+  }
   writeStatus({ pid: process.pid, startedAt: new Date().toISOString() });
   const cwd = prepareWorkspace();
   if (spec.contextPackPath && existsSync(spec.contextPackPath)) {
