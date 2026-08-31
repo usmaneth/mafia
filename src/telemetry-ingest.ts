@@ -4,13 +4,21 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { TelemetryStore, type TurnRecord } from "./telemetry-store";
 
-/** Bytes read per file per pass. Ingestion must not hold the corpus in memory. */
-const CHUNK_BYTES = 4 * 1024 * 1024;
+/**
+ * Bytes read from one file per pass.
+ *
+ * This bounds memory, not total work. At four megabytes a large session needed
+ * a dozen passes to catch up; almost every session file is smaller than this,
+ * so one pass now finishes it.
+ */
+const CHUNK_BYTES = 64 * 1024 * 1024;
 
 export interface HarnessSource {
   harness: string;
   roots: string[];
   parse: (lines: string[], path: string) => TurnRecord[];
+  /** Cline writes one JSON object per session rather than a line-delimited log. */
+  extension?: string;
 }
 
 function id(...parts: Array<string | number | undefined>): string {
@@ -118,14 +126,133 @@ export function parseCodex(lines: string[], path: string): TurnRecord[] {
   return turns;
 }
 
+/**
+ * Grok records its own usage shape, and is the only harness here that reports
+ * how long the provider call took.
+ */
+export function parseGrok(lines: string[], path: string): TurnRecord[] {
+  const turns: TurnRecord[] = [];
+  const session = path.split("/").at(-2) ?? path;
+  let model: string | undefined;
+  for (const line of lines) {
+    let entry: any;
+    try {
+      entry = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    const update = entry?.params?.update ?? {};
+    model = update.model ?? entry?.params?.model ?? model;
+    const usage = update.usage;
+    // Grok stamps in unix seconds, not an ISO string.
+    const seconds = Number(entry?.timestamp);
+    if (!usage || !Number.isFinite(seconds)) continue;
+    const startedAt = new Date(seconds * 1000).toISOString();
+    turns.push({
+      id: id("grok", session, entry?.params?.update?.prompt_id ?? startedAt),
+      harness: "grok",
+      sessionId: String(entry?.params?.sessionId ?? session),
+      startedAt,
+      model: model ? String(model) : undefined,
+      provider: "xai",
+      inputTokens: num(usage.inputTokens),
+      outputTokens: num(usage.outputTokens),
+      cacheReadTokens: num(usage.cachedReadTokens),
+      cacheWriteTokens: num(usage.cacheCreationTokens),
+      reasoningTokens: num(usage.reasoningTokens),
+      durationMs: num(usage.apiDurationMs) || undefined,
+      ok: update.stop_reason === "error" ? 0 : 1,
+    });
+  }
+  return turns;
+}
+
+/** Kimi names its fields differently but reports the same four quantities. */
+export function parseKimi(lines: string[], path: string): TurnRecord[] {
+  const turns: TurnRecord[] = [];
+  const session = path.split("/").at(-3) ?? path;
+  let model: string | undefined;
+  for (const line of lines) {
+    let entry: any;
+    try {
+      entry = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    // The model is announced once, when the profile binds.
+    if (entry?.type === "profile.bind" && entry.modelAlias) model = String(entry.modelAlias);
+    if (entry?.type !== "usage.record" || !entry.usage) continue;
+    const millis = Number(entry.time);
+    if (!Number.isFinite(millis)) continue;
+    const startedAt = new Date(millis).toISOString();
+    turns.push({
+      id: id("kimi", session, startedAt, entry.usage.output),
+      harness: "kimi",
+      sessionId: session,
+      startedAt,
+      model: entry.model ? String(entry.model) : model,
+      provider: "kimi-code",
+      inputTokens: num(entry.usage.inputOther),
+      outputTokens: num(entry.usage.output),
+      cacheReadTokens: num(entry.usage.inputCacheRead),
+      cacheWriteTokens: num(entry.usage.inputCacheCreation),
+      reasoningTokens: 0,
+      ok: 1,
+    });
+  }
+  return turns;
+}
+
+/**
+ * Cline records no token usage, but it does record how a session ended.
+ *
+ * That is the one thing every other source here is missing: whether the work
+ * finished cleanly. A turn with no tokens still carries an outcome.
+ */
+export function parseCline(lines: string[], path: string): TurnRecord[] {
+  const text = lines.join("\n");
+  let entry: any;
+  try {
+    entry = JSON.parse(text);
+  } catch {
+    return [];
+  }
+  const startedAt = String(entry?.started_at ?? "");
+  if (!startedAt || !entry?.session_id) return [];
+  const ended = entry?.ended_at ? new Date(entry.ended_at).getTime() : undefined;
+  const began = new Date(startedAt).getTime();
+  return [{
+    id: id("cline", entry.session_id),
+    harness: "cline",
+    sessionId: String(entry.session_id),
+    startedAt,
+    model: entry?.model ? String(entry.model) : undefined,
+    provider: entry?.provider ? String(entry.provider) : undefined,
+    cwd: entry?.cwd ? String(entry.cwd) : undefined,
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+    reasoningTokens: 0,
+    durationMs: ended && Number.isFinite(ended) && Number.isFinite(began) ? ended - began : undefined,
+    ok: entry?.exit_code === 0 || entry?.status === "completed" ? 1 : 0,
+  }];
+}
+
 export function harnessSources(home = homedir()): HarnessSource[] {
   return [
     { harness: "claude", roots: [join(home, ".claude", "projects")], parse: parseClaude },
     { harness: "codex", roots: [join(home, ".codex", "sessions")], parse: parseCodex },
+    // Void writes the same record shape as Claude Code, so it reuses the parser
+    // and only the harness label differs.
+    { harness: "void", roots: [join(home, ".void", "projects")], parse: (lines, path) => parseClaude(lines, path).map((turn) => ({ ...turn, harness: "void" })) },
+    { harness: "grok", roots: [join(home, ".grok", "sessions")], parse: parseGrok },
+    { harness: "kimi", roots: [join(home, ".kimi-code", "sessions")], parse: parseKimi },
+    { harness: "cline", roots: [join(home, ".cline", "data", "sessions")], parse: parseCline, extension: ".json" },
   ];
 }
 
-function walk(root: string, out: string[], depth = 0): void {
+function walk(root: string, out: string[], depth = 0, extension = ".jsonl"): void {
   if (depth > 6 || !existsSync(root)) return;
   let entries: Array<{ name: string; isDirectory(): boolean; isFile(): boolean }>;
   try {
@@ -135,8 +262,10 @@ function walk(root: string, out: string[], depth = 0): void {
   }
   for (const entry of entries) {
     const path = join(root, entry.name);
-    if (entry.isDirectory()) walk(path, out, depth + 1);
-    else if (entry.isFile() && entry.name.endsWith(".jsonl")) out.push(path);
+    if (entry.isDirectory()) walk(path, out, depth + 1, extension);
+    // Cline keeps a separate messages file beside each session; only the
+    // session record carries the outcome.
+    else if (entry.isFile() && entry.name.endsWith(extension) && !entry.name.endsWith(".messages.json")) out.push(path);
   }
 }
 
@@ -200,13 +329,17 @@ export function ingestTelemetry(
   options: { sources?: HarnessSource[]; maxBytes?: number } = {},
 ): IngestReport[] {
   const store = new TelemetryStore(stateRoot);
-  const budget = options.maxBytes ?? 512 * 1024 * 1024;
-  let spent = 0;
+  const sources = options.sources ?? harnessSources();
+  // Budget per source, not shared. A shared pool let the first harness consume
+  // all of it, so later ones ingested nothing and the summary showed their
+  // absence as though they had no data.
+  const budget = Math.max(1, Math.floor((options.maxBytes ?? 2048 * 1024 * 1024) / Math.max(1, sources.length)));
   const reports: IngestReport[] = [];
-  for (const source of options.sources ?? harnessSources()) {
+  for (const source of sources) {
+    let spent = 0;
     const started = Date.now();
     const files: string[] = [];
-    for (const root of source.roots) walk(root, files);
+    for (const root of source.roots) walk(root, files, 0, source.extension ?? ".jsonl");
     let filesRead = 0;
     let bytesRead = 0;
     let turns = 0;

@@ -6,6 +6,9 @@ import { loadConfig, repoRoot } from "./config";
 import { ModelCatalogService } from "./models";
 import { installPrAutomation } from "./pr";
 import { mirrorAll } from "./mirror";
+import { ingestTelemetry } from "./telemetry-ingest";
+import { ingestRemoteTelemetry } from "./telemetry-remote";
+import { TelemetryStore } from "./telemetry-store";
 import { collectAll } from "./gc";
 import { persistedToolPath, shellQuote, toolEnvironment } from "./process";
 import { withSshMultiplexing } from "./ssh";
@@ -132,7 +135,7 @@ function configureVpsFirst(): UpdateResult {
   }
 }
 
-export function updateMafia(options: { push?: boolean; deploy?: boolean; gcDays?: number } = {}): UpdateResult[] {
+export function updateMafia(options: { push?: boolean; deploy?: boolean; gcDays?: number; telemetry?: boolean } = {}): UpdateResult[] {
   const results: UpdateResult[] = [];
   results.push(configureVpsFirst());
   const remote = exec("git", ["remote"]);
@@ -196,6 +199,51 @@ export function updateMafia(options: { push?: boolean; deploy?: boolean; gcDays?
       }
     }
   }
+  if (options.telemetry) {
+    const stateRoot = loadConfig().stateRoot;
+    try {
+      // Local ingestion is incremental and costs about a third of a second once
+      // it has caught up, so it runs on every pass.
+      const local = ingestTelemetry(stateRoot);
+      const turns = local.reduce((sum, report) => sum + report.turns, 0);
+      results.push({
+        target: "telemetry",
+        status: "ok",
+        detail: turns ? `Recorded ${turns} new turn(s) from ${local.length} harness(es).` : "No new local sessions.",
+      });
+    } catch (error) {
+      results.push({ target: "telemetry", status: "error", detail: error instanceof Error ? error.message.slice(0, 140) : String(error) });
+    }
+    // Pulling from a host costs about fourteen seconds, which is too much to
+    // repeat every five minutes for data that changes slowly.
+    for (const host of Object.values(loadConfig().hosts).filter((entry) => entry.kind === "ssh" && entry.target)) {
+      try {
+        const store = new TelemetryStore(stateRoot);
+        const last = store.db.query(
+          "SELECT MAX(ingested_at) at FROM sources WHERE harness = ?",
+        ).get(`remote:${host.name}`) as { at: string | null } | null;
+        const age = last?.at ? Date.now() - new Date(last.at).getTime() : Number.POSITIVE_INFINITY;
+        if (age < 60 * 60_000) continue;
+        const report = ingestRemoteTelemetry(host);
+        // Only a successful pull sets the marker. Recording a failure would
+        // suppress the retry for an hour and hide the problem.
+        if (report.remoteTurns || report.merged) store.db.query(`
+          INSERT INTO sources (path,harness,bytes_read,size,mtime_ms,head,turns,ingested_at)
+          VALUES ($p,$h,0,0,0,'',$t,$at)
+          ON CONFLICT(path) DO UPDATE SET turns=excluded.turns, ingested_at=excluded.ingested_at
+        `).run({ $p: `remote:${host.name}`, $h: `remote:${host.name}`, $t: report.merged, $at: new Date().toISOString() } as never);
+        results.push({
+          target: `${host.name}-telemetry`,
+          status: report.merged || report.remoteTurns ? "ok" : "error",
+          detail: report.merged || report.remoteTurns
+            ? `Merged ${report.merged} new of ${report.remoteTurns} turn(s), ${(report.bytesTransferred / 1_048_576).toFixed(1)} MB.`
+            : report.detail || "No turns came back.",
+        });
+      } catch (error) {
+        results.push({ target: `${host.name}-telemetry`, status: "error", detail: error instanceof Error ? error.message.slice(0, 140) : String(error) });
+      }
+    }
+  }
   if (typeof options.gcDays === "number") {
     // Reclaim after the mirror, so a worktree removal can never race a copy.
     for (const collected of collectAll({ olderThanDays: options.gcDays })) {
@@ -228,7 +276,7 @@ export function installUpdateAutomation(): UpdateResult[] {
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
 <key>Label</key><string>dev.mafia.update</string>
-<key>ProgramArguments</key><array><string>/bin/zsh</string><string>-ilc</string><string>${shellQuote(process.execPath)} ${shellQuote(join(repoRoot, "src", "cli.ts"))} update --deploy --gc 7</string></array>
+<key>ProgramArguments</key><array><string>/bin/zsh</string><string>-ilc</string><string>${shellQuote(process.execPath)} ${shellQuote(join(repoRoot, "src", "cli.ts"))} update --deploy --gc 7 --telemetry</string></array>
 <key>EnvironmentVariables</key><dict>
 <key>PATH</key><string>${persistedToolPath()}</string>
 <key>HOME</key><string>${homedir()}</string>

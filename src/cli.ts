@@ -101,7 +101,7 @@ usage:
   mafia route --capability TYPE [--host HOST]
   mafia models [--harness NAME] [--provider NAME] [--find TEXT] [--effort LEVEL] [--refresh] [--json]
   mafia scale --tasks N [--ready N] [--risk low|medium|high]
-  mafia update [--push] [--deploy] [--gc DAYS]
+  mafia update [--push] [--deploy] [--gc DAYS] [--telemetry]
   mafia mirror [--watch] [--dry-run] [--force] [--host NAME] [--json]
   mafia gc [--dry-run] [--days N] [--host NAME] [--force] [--json]
   mafia quota [--refresh] [--model SELECTOR] [--json]
@@ -364,6 +364,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
         push: has(args, "--push"),
         deploy: has(args, "--deploy"),
         gcDays: has(args, "--gc") ? Number(option(args, "--gc") ?? 7) : undefined,
+        telemetry: has(args, "--telemetry"),
       }));
       return;
     case "mirror": {
@@ -502,6 +503,15 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
             `  ${String(Math.round(row.medianTtftMs)).padStart(7)}ms  ${row.model} (${row.harness}, ${row.turns} turns)`)].join("\n")
           : "no latency recorded yet");
         return;
+      }
+      const coverage = store.coverage();
+      const incomplete = coverage.filter((row) => row.total > 0 && row.bytesRead < row.total);
+      if (incomplete.length && !has(args, "--json")) {
+        // Say when the picture is partial. A summary that looks complete while
+        // a third of the history is unread is worse than no summary.
+        console.log(incomplete.map((row) =>
+          `  partial: ${row.harness} ${Math.round(100 * row.bytesRead / row.total)}% read - run \`mafia history --ingest\` again`).join("\n"));
+        console.log("");
       }
       const summary = store.summary();
       if (has(args, "--json")) printJson(summary);
