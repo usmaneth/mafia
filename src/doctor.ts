@@ -36,20 +36,82 @@ function sh(command: string, args: string[], timeout = 20_000): { ok: boolean; o
 }
 
 function toolchain(): Check {
-  const missing = ["git", "node", "bun", "rsync", "ssh", "omp"].filter((binary) =>
-    !sh("sh", ["-c", `command -v ${binary}`]).ok);
+  // One shell, not one per binary. Six spawns were most of this command's time.
+  const wanted = ["git", "node", "bun", "rsync", "ssh", "omp"];
+  const found = new Set(
+    sh("sh", ["-c", wanted.map((binary) => `command -v ${binary} >/dev/null 2>&1 && echo ${binary}`).join("; ")])
+      .out.split("\n").map((line) => line.trim()).filter(Boolean),
+  );
+  const missing = wanted.filter((binary) => !found.has(binary));
   return missing.length
     ? { name: "toolchain", state: "fail", detail: `not on PATH: ${missing.join(", ")}`, fix: "Install the missing tools, or check the PATH a timer passes." }
     : { name: "toolchain", state: "ok", detail: "every required binary resolves" };
 }
 
-function reachable(host: HostConfig): Check {
+export interface HostFacts {
+  ok: boolean;
+  latencyMs: number;
+  error?: string;
+  workerHashes: string[];
+  diskPercent: number;
+  ownedBytes: number;
+  staleWorktrees: number;
+  staleSnapshots: number;
+  auditBytes: number;
+}
+
+/**
+ * Ask the host everything in one round trip.
+ *
+ * The checks below each used to open their own connection. Six sequential
+ * probes made `doctor` the slowest command in the tool at 0.73 s, for facts
+ * that all come from the same shell.
+ */
+export function probeHost(host: HostConfig, cutoffDays = 7): HostFacts {
   const started = Date.now();
-  const result = sh("ssh", [host.target!, "true"]);
-  const ms = Date.now() - started;
+  const script = [
+    `printf 'HASH\n'`,
+    `sha256sum ${host.workerPath} /home/${host.defaultUser ?? "usman"}/mafia/worker/worker.mjs 2>/dev/null | awk '{print $1}'`,
+    `printf 'DISK\n'; df -P / | tail -1 | awk '{print $5}' | tr -d %`,
+    `printf 'OWNED\n'; du -sb ${host.stateRoot} 2>/dev/null | cut -f1`,
+    `printf 'WORKTREES\n'; find ${host.stateRoot}/worktrees -mindepth 2 -maxdepth 2 -type d -mtime +${cutoffDays} 2>/dev/null | wc -l`,
+    `printf 'SNAPSHOTS\n'; find ${host.stateRoot}/snapshots -mindepth 1 -maxdepth 1 -type d -mtime +${cutoffDays} 2>/dev/null | wc -l`,
+    `printf 'AUDIT\n'; wc -c < ${host.stateRoot}/events/audit.jsonl 2>/dev/null || echo 0`,
+  ].join("; ");
+  const result = sh("ssh", [host.target!, script], 45_000);
+  const latencyMs = Date.now() - started;
   if (!result.ok) {
-    return { name: `ssh:${host.name}`, state: "fail", detail: result.out.slice(0, 90) || "no answer", fix: "Check the VPS is up and the key is loaded." };
+    return { ok: false, latencyMs, error: result.out.slice(0, 90), workerHashes: [], diskPercent: 0, ownedBytes: 0, staleWorktrees: 0, staleSnapshots: 0, auditBytes: 0 };
   }
+  const section = (name: string): string[] => {
+    const lines = result.out.split("\n").map((line) => line.trim());
+    const start = lines.indexOf(name);
+    if (start < 0) return [];
+    const out: string[] = [];
+    for (let i = start + 1; i < lines.length; i++) {
+      if (/^(HASH|DISK|OWNED|WORKTREES|SNAPSHOTS|AUDIT)$/.test(lines[i]!)) break;
+      if (lines[i]) out.push(lines[i]!);
+    }
+    return out;
+  };
+  const one = (name: string) => Number(section(name)[0] ?? 0) || 0;
+  return {
+    ok: true,
+    latencyMs,
+    workerHashes: section("HASH"),
+    diskPercent: one("DISK"),
+    ownedBytes: one("OWNED"),
+    staleWorktrees: one("WORKTREES"),
+    staleSnapshots: one("SNAPSHOTS"),
+    auditBytes: one("AUDIT"),
+  };
+}
+
+function reachable(host: HostConfig, facts: HostFacts): Check {
+  if (!facts.ok) {
+    return { name: `ssh:${host.name}`, state: "fail", detail: facts.error || "no answer", fix: "Check the VPS is up and the key is loaded." };
+  }
+  const ms = facts.latencyMs;
   // A reused connection answers in tens of milliseconds; a fresh handshake to
   // this host costs about 580 ms.
   const shared = ms < 250;
@@ -73,12 +135,11 @@ function mirror(stateRoot: string): Check {
   return { name: "mirror", state: "ok", detail: `${state.verdict}, checked ${state.checkedAt.slice(11, 19)}Z` };
 }
 
-function workerParity(host: HostConfig): Check {
+function workerParity(host: HostConfig, facts: HostFacts): Check {
   const local = existsSync(join(repoRoot, "worker", "worker.mjs"))
     ? createHash("sha256").update(readFileSync(join(repoRoot, "worker", "worker.mjs"))).digest("hex")
     : "";
-  const remote = sh("ssh", [host.target!, `sha256sum ${host.workerPath} /home/usman/mafia/worker/worker.mjs 2>/dev/null | awk '{print $1}'`]);
-  const hashes = remote.out.split("\n").map((line) => line.trim()).filter(Boolean);
+  const hashes = facts.workerHashes;
   const agreed = hashes.length >= 1 && hashes.every((value) => value === local);
   return agreed
     ? { name: "worker-parity", state: "ok", detail: "the running worker matches the source" }
@@ -196,15 +257,9 @@ function database(stateRoot: string): Check {
   };
 }
 
-function diskAndState(host: HostConfig, cutoffDays = 7): Check {
-  const usage = sh("ssh", [host.target!, "df -P / | tail -1 | awk '{print $5}' | tr -d %"]);
-  const percent = Number(usage.out.trim());
-  const stale = sh("ssh", [host.target!, [
-    `find ${host.stateRoot}/worktrees -mindepth 2 -maxdepth 2 -type d -mtime +${cutoffDays} 2>/dev/null | wc -l`,
-    `find ${host.stateRoot}/snapshots -mindepth 1 -maxdepth 1 -type d -mtime +${cutoffDays} 2>/dev/null | wc -l`,
-  ].join("; ")]);
-  const [worktrees = "0", snapshots = "0"] = stale.out.split("\n").map((line) => line.trim());
-  const reclaimable = Number(worktrees) + Number(snapshots);
+function diskAndState(host: HostConfig, facts: HostFacts, cutoffDays = 7): Check {
+  const percent = facts.diskPercent;
+  const reclaimable = facts.staleWorktrees + facts.staleSnapshots;
   if (Number.isFinite(percent) && percent >= 90) {
     // Report only what Mafia owns. A `du` across the whole home directory took
     // 202 seconds here, which is far too slow for a health check, and the
@@ -234,12 +289,12 @@ function diskAndState(host: HostConfig, cutoffDays = 7): Check {
  * is somehow past the end would silently stop delivering anything, and nothing
  * else in the system would report it.
  */
-function cursors(host: HostConfig, stateRoot: string): Check {
+function cursors(host: HostConfig, stateRoot: string, facts: HostFacts): Check {
   const path = join(stateRoot, "cursors", `${host.name}.json`);
   if (!existsSync(path)) return { name: "cursors", state: "ok", detail: "no cursor yet; the next read starts from the beginning" };
   try {
     const cursor = JSON.parse(readFileSync(path, "utf8")) as { events?: number };
-    const size = Number(sh("ssh", [host.target!, `wc -c < ${host.stateRoot}/events/audit.jsonl 2>/dev/null || echo 0`]).out.trim());
+    const size = facts.auditBytes;
     if ((cursor.events ?? 0) > size) {
       return { name: "cursors", state: "fail", detail: `event cursor ${cursor.events} is past the file at ${size}`, fix: `rm ${path}` };
     }
@@ -254,15 +309,61 @@ export function runDoctor(): Check[] {
   const checks: Check[] = [toolchain(), timer(), mirror(config.stateRoot)];
   for (const host of Object.values(config.hosts)) {
     if (host.kind !== "ssh" || !host.target) continue;
-    const live = reachable(host);
+    const facts = probeHost(host);
+    const live = reachable(host, facts);
     checks.push(live);
     // Every remaining host check needs the connection, so skip them cleanly
     // rather than emitting a cascade of failures that all mean the same thing.
     if (live.state === "fail") continue;
-    checks.push(workerParity(host), diskAndState(host), cursors(host, config.stateRoot));
+    checks.push(workerParity(host, facts), diskAndState(host, facts), cursors(host, config.stateRoot, facts));
   }
   checks.push(quota(config.stateRoot), roles(config.stateRoot), catalogHealth(config.stateRoot), database(config.stateRoot));
   return checks;
+}
+
+/** Remedies that are safe to run unattended: idempotent, and never destructive. */
+const safeFixes: Record<string, string[]> = {
+  mirror: ["mirror"],
+  "model-catalog": ["models", "--refresh"],
+  quota: ["quota", "--refresh"],
+  timer: ["install-updater"],
+  "worker-parity": ["mirror"],
+};
+
+export interface FixResult {
+  name: string;
+  ran: string;
+  ok: boolean;
+  detail: string;
+}
+
+/**
+ * Apply the remedies that carry no judgement.
+ *
+ * A check whose fix deletes data, edits a profile, or spends quota is never run
+ * here. Those are named and left to a person. `mafia gc` is excluded on purpose:
+ * reclaiming disk is a choice about how much history to keep.
+ */
+export function applyFixes(checks: Check[], runCommand: (args: string[]) => { ok: boolean; out: string }): FixResult[] {
+  const results: FixResult[] = [];
+  for (const check of checks) {
+    if (check.state === "ok") continue;
+    const fix = safeFixes[check.name];
+    if (!fix) {
+      results.push({ name: check.name, ran: "", ok: false, detail: check.fix ?? "No automatic remedy; this one needs a person." });
+      continue;
+    }
+    const outcome = runCommand(fix);
+    results.push({ name: check.name, ran: `mafia ${fix.join(" ")}`, ok: outcome.ok, detail: outcome.out.split("\n")[0]?.slice(0, 90) ?? "" });
+  }
+  return results;
+}
+
+export function formatFixes(results: FixResult[]): string {
+  if (!results.length) return "nothing needed fixing";
+  return results.map((result) => result.ran
+    ? `  ${result.ok ? "fixed  " : "FAILED "} ${result.name.padEnd(16)} ${result.ran}\n            ${result.detail}`
+    : `  manual  ${result.name.padEnd(16)} ${result.detail}`).join("\n");
 }
 
 export function formatDoctor(checks: Check[]): string {
