@@ -13,6 +13,7 @@ export interface TurnRecord {
   /** Stable id, so re-reading a file cannot double-count a turn. */
   id: string;
   harness: string;
+  host?: string;
   sessionId: string;
   startedAt: string;
   model?: string;
@@ -43,6 +44,9 @@ export class TelemetryStore {
       CREATE TABLE IF NOT EXISTS turns (
         id TEXT PRIMARY KEY,
         harness TEXT NOT NULL,
+        -- Which machine produced the turn. The same harness runs on the laptop
+        -- and on the VPS, and their cost and latency are not comparable.
+        host TEXT NOT NULL DEFAULT 'local',
         session_id TEXT NOT NULL,
         started_at TEXT NOT NULL,
         model TEXT,
@@ -89,9 +93,9 @@ export class TelemetryStore {
   ingest(path: string, harness: string, size: number, mtimeMs: number, bytesRead: number, turns: TurnRecord[], head = ""): number {
     const insert = this.db.query(`
       INSERT OR IGNORE INTO turns (
-        id,harness,session_id,started_at,model,provider,cwd,input_tokens,output_tokens,
+        id,harness,host,session_id,started_at,model,provider,cwd,input_tokens,output_tokens,
         cache_read_tokens,cache_write_tokens,reasoning_tokens,ttft_ms,duration_ms,tool_name,ok
-      ) VALUES ($id,$harness,$session,$started,$model,$provider,$cwd,$input,$output,$cacheRead,$cacheWrite,$reasoning,$ttft,$duration,$tool,$ok)
+      ) VALUES ($id,$harness,$host,$session,$started,$model,$provider,$cwd,$input,$output,$cacheRead,$cacheWrite,$reasoning,$ttft,$duration,$tool,$ok)
     `);
     const source = this.db.query(`
       INSERT INTO sources (path,harness,bytes_read,size,mtime_ms,head,turns,ingested_at)
@@ -104,7 +108,7 @@ export class TelemetryStore {
     this.db.transaction(() => {
       for (const turn of turns) {
         added += insert.run({
-          $id: turn.id, $harness: turn.harness, $session: turn.sessionId, $started: turn.startedAt,
+          $id: turn.id, $harness: turn.harness, $host: turn.host ?? "local", $session: turn.sessionId, $started: turn.startedAt,
           $model: turn.model ?? null, $provider: turn.provider ?? null, $cwd: turn.cwd ?? null,
           $input: turn.inputTokens, $output: turn.outputTokens, $cacheRead: turn.cacheReadTokens,
           $cacheWrite: turn.cacheWriteTokens, $reasoning: turn.reasoningTokens,
@@ -128,16 +132,16 @@ export class TelemetryStore {
    * more output than input, which is not what happened.
    */
   summary(): Array<{
-    harness: string; turns: number; models: number; first: string; last: string;
+    harness: string; host: string; turns: number; models: number; first: string; last: string;
     inputTokens: number; outputTokens: number; cacheReadTokens: number;
   }> {
     return this.db.query(`
-      SELECT harness, COUNT(*) turns, COUNT(DISTINCT model) models,
+      SELECT harness, host, COUNT(*) turns, COUNT(DISTINCT model) models,
         MIN(started_at) first, MAX(started_at) last,
         COALESCE(SUM(input_tokens),0) inputTokens,
         COALESCE(SUM(output_tokens),0) outputTokens,
         COALESCE(SUM(cache_read_tokens),0) cacheReadTokens
-      FROM turns GROUP BY harness ORDER BY turns DESC
+      FROM turns GROUP BY harness, host ORDER BY turns DESC
     `).all() as never;
   }
 

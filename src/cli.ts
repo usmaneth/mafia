@@ -20,6 +20,8 @@ import { formatDoctor, runDoctor } from "./doctor";
 import { formatSubagents } from "./format";
 import { formatIngest, ingestTelemetry } from "./telemetry-ingest";
 import { TelemetryStore } from "./telemetry-store";
+import { formatRemoteIngest, ingestRemoteTelemetry } from "./telemetry-remote";
+import { buildInsights, formatInsights } from "./insights";
 import { readActivity } from "../hooks/subagent-activity";
 import {
   exhaustedProviders,
@@ -105,7 +107,8 @@ usage:
   mafia quota [--refresh] [--model SELECTOR] [--json]
   mafia roles [--json] [--suggest]
   mafia subagents [--json]   what each OMP subagent is running and doing
-  mafia history [--ingest] [--models] [--json]   telemetry across every harness
+  mafia history [--ingest] [--remote] [--models] [--json]   telemetry across every harness and host
+  mafia insights [--json]    what the telemetry says to change next
   mafia bench [--models a,b] [--runs N] [--json]   measure real TTFT; spends quota
   mafia cleanse [--repo PATH] [--host NAME] [--agents N] [--all] [--tests] [REQUEST]
   mafia install-updater
@@ -129,7 +132,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     "help", "-h", "--help", "jobs", "status", "watch", "dispatch", "logs", "cancel", "handoff", "compare",
     "team", "hub", "message", "decisions", "decision", "events", "route", "budget", "protocol",
     "sync", "hosts", "install-remote", "eval", "__team-run", "doctor", "models", "scale", "update", "install-updater",
-    "vps", "__vps-refresh", "prs", "__prs-refresh", "mirror", "gc", "quota", "roles", "bench", "cleanse", "subagents", "history",
+    "vps", "__vps-refresh", "prs", "__prs-refresh", "mirror", "gc", "quota", "roles", "bench", "cleanse", "subagents", "history", "insights",
   ]);
   if (!command || command === "shell" || command === "run" || !controlCommands.has(command)) {
     const { spawnSync } = await import("node:child_process");
@@ -474,12 +477,23 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     }
     case "history": {
       const store = new TelemetryStore(mafia.config.stateRoot);
+      if (has(args, "--remote")) {
+        const hosts = Object.values(mafia.config.hosts).filter((entry) => entry.kind === "ssh" && entry.target);
+        console.log(formatRemoteIngest(hosts.map((entry) => ingestRemoteTelemetry(entry, {
+          maxBytes: option(args, "--max-bytes") ? Number(option(args, "--max-bytes")) : undefined,
+        }))));
+        console.log("");
+      }
       if (has(args, "--ingest")) {
         const reports = ingestTelemetry(mafia.config.stateRoot, {
           maxBytes: option(args, "--max-bytes") ? Number(option(args, "--max-bytes")) : undefined,
         });
-        console.log(formatIngest(reports));
-        console.log("");
+        if (has(args, "--json")) printJson(reports);
+        else {
+          console.log(formatIngest(reports));
+          console.log("");
+        }
+        if (has(args, "--json")) return;
       }
       if (has(args, "--models")) {
         const rows = store.modelLatency(Number(option(args, "--min") ?? 5));
@@ -492,12 +506,17 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
       const summary = store.summary();
       if (has(args, "--json")) printJson(summary);
       else console.log(summary.length
-        ? [`${"HARNESS".padEnd(10)} ${"TURNS".padStart(8)} ${"MODELS".padStart(6)}  ${"FRESH IN".padStart(12)} ${"CACHED IN".padStart(14)} ${"OUT".padStart(12)}  SPAN`,
+        ? [`${"HARNESS".padEnd(9)} ${"HOST".padEnd(6)} ${"TURNS".padStart(8)} ${"MODELS".padStart(6)}  ${"FRESH IN".padStart(12)} ${"CACHED IN".padStart(14)} ${"OUT".padStart(12)}  SPAN`,
           ...summary.map((row) =>
-            `${row.harness.padEnd(10)} ${String(row.turns).padStart(8)} ${String(row.models).padStart(6)}  ` +
+            `${row.harness.padEnd(9)} ${(row.host ?? "local").padEnd(6)} ${String(row.turns).padStart(8)} ${String(row.models).padStart(6)}  ` +
             `${row.inputTokens.toLocaleString().padStart(12)} ${row.cacheReadTokens.toLocaleString().padStart(14)} ${row.outputTokens.toLocaleString().padStart(12)}  ` +
             `${row.first.slice(0, 10)} to ${row.last.slice(0, 10)}`)].join("\n")
         : "no telemetry yet - run `mafia history --ingest`");
+      return;
+    }
+    case "insights": {
+      const found = buildInsights(mafia.config.stateRoot);
+      has(args, "--json") ? printJson(found) : console.log(formatInsights(found));
       return;
     }
     case "install-updater":
