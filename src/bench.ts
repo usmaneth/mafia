@@ -145,3 +145,64 @@ export function formatMetrics(metrics: Record<string, ModelMetric>): string {
     });
   return ["measured models", ...lines].join("\n");
 }
+
+/**
+ * Fold the latency of finished jobs into the measured set.
+ *
+ * Every worker already records the time to its first output, so the system has
+ * been measuring itself all along and discarding the result. Learning from that
+ * costs nothing, needs no synthetic requests, and improves as the fleet is
+ * used.
+ *
+ * These numbers include harness startup, so they are not comparable to
+ * `omp bench`. For routing they are the better figure: it is what a caller
+ * actually waits for. Observed values therefore take precedence.
+ */
+export function learnObservedLatency(
+  rows: Array<{ model: string | null; ttftMs: number | null }>,
+  resolve: (model: string) => string | undefined,
+  minimumSamples = 3,
+): Record<string, ModelMetric> {
+  const samples = new Map<string, number[]>();
+  for (const row of rows) {
+    if (!row.model || typeof row.ttftMs !== "number" || !Number.isFinite(row.ttftMs) || row.ttftMs <= 0) continue;
+    // A worker overwrites the model with the name the provider served, which is
+    // not always a catalog selector, so each has to be mapped back.
+    const selector = resolve(row.model);
+    if (!selector) continue;
+    const list = samples.get(selector) ?? [];
+    list.push(row.ttftMs);
+    samples.set(selector, list);
+  }
+  const at = new Date().toISOString();
+  const value: Record<string, ModelMetric> = {};
+  for (const [selector, list] of samples) {
+    if (list.length < minimumSamples) continue;
+    // The median, because one job that waited behind a cold start should not
+    // decide how every later task is routed.
+    const sorted = [...list].sort((left, right) => left - right);
+    const middle = Math.floor(sorted.length / 2);
+    const median = sorted.length % 2 ? sorted[middle]! : (sorted[middle - 1]! + sorted[middle]!) / 2;
+    value[selector] = { selector, measuredAt: at, ttftMs: Math.round(median), source: "observed", samples: list.length };
+  }
+  return value;
+}
+
+/**
+ * Merge newly observed latency into the stored metrics.
+ *
+ * A benched figure is never allowed to replace an observed one: the benchmark
+ * measures the provider, the observation measures what the fleet experiences.
+ */
+export function recordObserved(stateRoot: string, learned: Record<string, ModelMetric>): number {
+  if (!Object.keys(learned).length) return 0;
+  const previous = readMetrics(stateRoot);
+  const models = { ...previous.models };
+  for (const [selector, metric] of Object.entries(learned)) models[selector] = metric;
+  const path = metricsPath(stateRoot);
+  mkdirSync(dirname(path), { recursive: true });
+  const temp = `${path}.${process.pid}.tmp`;
+  writeFileSync(temp, `${JSON.stringify({ generatedAt: new Date().toISOString(), models }, null, 2)}\n`, { mode: 0o600 });
+  renameSync(temp, path);
+  return Object.keys(learned).length;
+}

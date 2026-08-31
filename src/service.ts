@@ -23,6 +23,7 @@ import { buildHandoffPacket } from "./packet";
 import { ControlPlane } from "./control";
 import { ModelCatalogService, resolveCatalogModel } from "./models";
 import { detectHarnessModel } from "./harness-model";
+import { learnObservedLatency, recordObserved } from "./bench";
 import { healthyRoleModels, readConfiguredRoles } from "./roles";
 import {
   isQuotaFailure,
@@ -278,6 +279,12 @@ export class MafiaService {
     });
     // Both of these touch the control plane, so they run outside the transaction.
     for (const job of failures) this.noteProviderFailure(job);
+    // A job that just finished carries a latency measurement that routing wants.
+    // Learning here means the fleet gets better at choosing models simply by
+    // being used, with no synthetic requests and nothing to schedule.
+    if (failures.length || result.some((job) => job.state === "succeeded" && job.usage?.ttftMs)) {
+      this.learnLatency();
+    }
     // Delivery opens SSH connections, so it must run outside the transaction.
     if (pendingMessages.length) {
       for (const message of pendingMessages) this.deliverMessage(message, result);
@@ -490,6 +497,33 @@ export class MafiaService {
       this.roleCache = { overrides: result.overrides };
     }
     return Object.keys(this.roleCache.overrides).length ? this.roleCache.overrides : undefined;
+  }
+
+  /**
+   * Map a recorded model name back to a catalog selector.
+   *
+   * A worker overwrites the model with the name the provider served, so the
+   * usage table holds a mix of selectors and bare provider names.
+   */
+  private learnLatency(): void {
+    const catalog = this.models.cached();
+    if (!catalog) return;
+    const bySelector = new Map(catalog.models.map((model) => [model.selector, model.selector]));
+    const byId = new Map<string, string[]>();
+    for (const model of catalog.models) {
+      const key = model.id.split("/").at(-1)!.toLowerCase();
+      byId.set(key, [...(byId.get(key) ?? []), model.selector]);
+    }
+    const resolve = (name: string): string | undefined => {
+      if (bySelector.has(name)) return name;
+      // Only when the name points at exactly one model. A name shared by several
+      // providers would otherwise attribute one provider's latency to all.
+      const matches = byId.get(name.split("/").at(-1)!.toLowerCase());
+      return matches?.length === 1 ? matches[0] : undefined;
+    };
+    try {
+      recordObserved(this.config.stateRoot, learnObservedLatency(this.store.latencySamples(), resolve));
+    } catch {}
   }
 
   private markStale(job: JobStatus): JobStatus {

@@ -187,3 +187,74 @@ export function formatRoleChanges(changes: RoleChange[], unfixable: RoleChange[]
   if (!lines.length) return "every OMP role points at a provider that can take work";
   return lines.join("\n");
 }
+
+export interface RoleSuggestion {
+  role: string;
+  from: string;
+  to: string;
+  fromMs: number;
+  toMs: number;
+}
+
+/**
+ * Suggest a faster model for a role, from latency the fleet actually observed.
+ *
+ * These are suggestions, never applied on their own. Repinning a role because
+ * its provider is dead restores a capability the operator already chose;
+ * repinning it because something is quicker overrides that choice, and speed is
+ * not always what a role was picked for.
+ *
+ * The names mislead in both directions here: a model called `mini` measured
+ * slower than the full model it shrinks, and one called `flash` was the slowest
+ * of everything configured.
+ */
+export function suggestFasterRoles(
+  configured: RoleModels,
+  metrics: Record<string, { selector: string; ttftMs?: number }>,
+  catalog: ModelCatalog | undefined,
+  blocked: ReadonlySet<string> = new Set(),
+  minimumGain = 1.5,
+): RoleSuggestion[] {
+  if (!catalog) return [];
+  const latency = (selector: string): number | undefined => {
+    const exact = metrics[selector]?.ttftMs;
+    if (exact) return exact;
+    const tail = selector.split("/").at(-1)!.toLowerCase();
+    return Object.values(metrics).find((entry) => entry.selector.toLowerCase().endsWith(tail))?.ttftMs;
+  };
+  const healthy = Object.values(metrics)
+    .filter((entry) => entry.ttftMs)
+    .map((entry) => ({ entry, record: catalog.models.find((model) => model.selector === entry.selector) }))
+    .filter((row) => row.record && !blocked.has(row.record.provider));
+
+  const suggestions: RoleSuggestion[] = [];
+  for (const [role, selector] of Object.entries(configured)) {
+    // Only roles where speed is the point. A reasoning role is chosen for depth.
+    if (!["smol", "task", "designer"].includes(role)) continue;
+    const current = latency(selector);
+    if (!current) continue;
+    const better = healthy
+      .filter((row) => row.entry.ttftMs! * minimumGain <= current)
+      .sort((left, right) => left.entry.ttftMs! - right.entry.ttftMs!)[0];
+    if (!better) continue;
+    suggestions.push({
+      role,
+      from: selector,
+      to: better.entry.selector,
+      fromMs: current,
+      toMs: better.entry.ttftMs!,
+    });
+  }
+  return suggestions;
+}
+
+export function formatRoleSuggestions(suggestions: RoleSuggestion[]): string {
+  if (!suggestions.length) return "no role would gain meaningfully from a faster model";
+  return [
+    "measured latency suggests a faster model for these roles:",
+    ...suggestions.map((entry) =>
+      `  ${entry.role.padEnd(9)} ${entry.from} (${entry.fromMs}ms)\n            -> ${entry.to} (${entry.toMs}ms, ${(entry.fromMs / entry.toMs).toFixed(1)}x faster)`),
+    "",
+    "  Apply with: omp --profile mafia config set modelRoles '<json>'",
+  ].join("\n");
+}

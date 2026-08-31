@@ -616,3 +616,44 @@ export function formatModels(catalog: ModelCatalog, shown: ModelRecord[]): strin
   lines.push("", "append an effort to a selector to set reasoning depth, e.g. anthropic/claude-opus-5:high");
   return lines.join("\n");
 }
+
+
+/**
+ * Render what each OMP subagent is doing.
+ *
+ * The built-in panel shows a name and an elapsed time. This adds the model each
+ * one resolved to, the tool it is in, and what that tool is working on, which
+ * is what makes a stalled subagent distinguishable from a busy one.
+ */
+export function formatSubagents(rows: Array<{
+  id: string;
+  name?: string;
+  model?: string;
+  cwd: string;
+  state: string;
+  tool?: string;
+  detail?: string;
+  toolCount: number;
+  startedAt: string;
+  updatedAt: string;
+}>, now = Date.now()): string {
+  // Keep a finished subagent visible for a few minutes. A view that empties the
+  // instant a wave completes hides the thing you most want to read afterwards.
+  const recent = rows.filter((row) =>
+    row.state !== "done" || now - new Date(row.updatedAt).getTime() < 5 * 60_000);
+  if (!recent.length) return "no OMP subagents are running";
+  const live = recent;
+  const idleFor = (row: { updatedAt: string }) => Math.round((now - new Date(row.updatedAt).getTime()) / 1000);
+  const lines = [`${fit("SUBAGENT", 22)} ${fit("MODEL", 26)} ${fit("STATE", 8)} ${fit("AGE", 6)} ${fit("TOOLS", 6)} DOING`];
+  for (const row of live.sort((left, right) => left.startedAt.localeCompare(right.startedAt))) {
+    // A subagent whose last update is old is stalled, whatever it last claimed.
+    const stale = idleFor(row) > 90;
+    const state = stale ? `stalled` : row.state;
+    lines.push(
+      `${fit(row.name ?? row.id, 22)} ${fit(row.model ?? "-", 26)} ${fit(state, 8)} ` +
+      `${fit(age(row.startedAt), 6)} ${fit(String(row.toolCount), 6)} ` +
+      `${row.tool ? `${row.tool}: ` : ""}${row.detail ?? "-"}`,
+    );
+  }
+  return lines.join("\n");
+}
