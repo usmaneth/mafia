@@ -40,24 +40,24 @@ describe("insights", () => {
     expect(buildInsights(state).some((entry) => entry.title.includes("uncached"))).toBe(false);
   });
 
-  test("names the model that produces most of the output", () => {
+  test("names the model that accounts for most of the tokens", () => {
     const state = root();
     seed(state, [
-      { model: "big", outputTokens: 9_000_000 },
-      { model: "small", outputTokens: 100_000 },
+      { model: "big", outputTokens: 9_000_000, cacheReadTokens: 90_000_000 },
+      { model: "small", outputTokens: 100_000, cacheReadTokens: 1_000_000 },
     ]);
     const found = buildInsights(state);
-    expect(found.some((entry) => entry.title.includes("big") && entry.title.includes("of all output"))).toBe(true);
+    expect(found.some((entry) => entry.title.includes("big") && entry.title.includes("of all tokens"))).toBe(true);
   });
 
   test("does not claim concentration when work is spread", () => {
     const state = root();
     seed(state, [
-      { model: "a", outputTokens: 1_000_000 },
-      { model: "b", outputTokens: 1_000_000 },
-      { model: "c", outputTokens: 1_000_000 },
+      { model: "a", outputTokens: 1_000_000, cacheReadTokens: 10_000_000 },
+      { model: "b", outputTokens: 1_000_000, cacheReadTokens: 10_000_000 },
+      { model: "c", outputTokens: 1_000_000, cacheReadTokens: 10_000_000 },
     ]);
-    expect(buildInsights(state).some((entry) => entry.title.includes("of all output"))).toBe(false);
+    expect(buildInsights(state).some((entry) => entry.title.includes("of all tokens"))).toBe(false);
   });
 
   test("ignores a model with too little history to judge", () => {

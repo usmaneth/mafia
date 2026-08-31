@@ -110,14 +110,16 @@ export function formatExplanation(value: Explanation): string {
 
 /** A short, per-model account of what the fleet has learned, for the dashboard. */
 export function modelScorecard(stateRoot: string, limit = 8): Array<{
-  model: string; turns: number; outputTokens: number; ttftMs?: number; source?: string;
+  model: string; turns: number; outputTokens: number; totalTokens: number; ttftMs?: number; source?: string;
 }> {
   const telemetry = new TelemetryStore(stateRoot);
   const metrics = usableMetrics(stateRoot);
   const rows = telemetry.db.query(`
-    SELECT model, COUNT(*) turns, COALESCE(SUM(output_tokens),0) outputTokens
-    FROM turns WHERE model IS NOT NULL GROUP BY model ORDER BY outputTokens DESC LIMIT ?
-  `).all(limit) as Array<{ model: string; turns: number; outputTokens: number }>;
+    SELECT model, COUNT(*) turns,
+      COALESCE(SUM(output_tokens),0) outputTokens,
+      COALESCE(SUM(input_tokens + cache_read_tokens + cache_write_tokens + output_tokens),0) totalTokens
+    FROM turns WHERE model IS NOT NULL GROUP BY model ORDER BY totalTokens DESC LIMIT ?
+  `).all(limit) as Array<{ model: string; turns: number; outputTokens: number; totalTokens: number }>;
   return rows.map((row) => {
     const metric = metrics[row.model]
       ?? Object.values(metrics).find((entry) => entry.selector.endsWith(row.model));

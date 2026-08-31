@@ -210,15 +210,16 @@ export class TelemetryStore {
 
   summary(): Array<{
     harness: string; host: string; turns: number; models: number; first: string; last: string;
-    inputTokens: number; outputTokens: number; cacheReadTokens: number;
+    inputTokens: number; outputTokens: number; cacheReadTokens: number; totalTokens: number;
   }> {
     return this.db.query(`
       SELECT harness, host, COUNT(*) turns, COUNT(DISTINCT model) models,
         MIN(started_at) first, MAX(started_at) last,
         COALESCE(SUM(input_tokens),0) inputTokens,
         COALESCE(SUM(output_tokens),0) outputTokens,
-        COALESCE(SUM(cache_read_tokens),0) cacheReadTokens
-      FROM turns GROUP BY harness, host ORDER BY turns DESC
+        COALESCE(SUM(cache_read_tokens),0) cacheReadTokens,
+        COALESCE(SUM(input_tokens + cache_read_tokens + cache_write_tokens + output_tokens),0) totalTokens
+      FROM turns GROUP BY harness, host ORDER BY totalTokens DESC
     `).all() as never;
   }
 

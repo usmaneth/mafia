@@ -539,11 +539,29 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
       const summary = store.summary();
       if (has(args, "--json")) printJson(summary);
       else console.log(summary.length
-        ? [`${"HARNESS".padEnd(9)} ${"HOST".padEnd(6)} ${"TURNS".padStart(8)} ${"MODELS".padStart(6)}  ${"FRESH IN".padStart(12)} ${"CACHED IN".padStart(14)} ${"OUT".padStart(12)}  SPAN`,
-          ...summary.map((row) =>
-            `${row.harness.padEnd(9)} ${(row.host ?? "local").padEnd(6)} ${String(row.turns).padStart(8)} ${String(row.models).padStart(6)}  ` +
-            `${row.inputTokens.toLocaleString().padStart(12)} ${row.cacheReadTokens.toLocaleString().padStart(14)} ${row.outputTokens.toLocaleString().padStart(12)}  ` +
-            `${row.first.slice(0, 10)} to ${row.last.slice(0, 10)}`)].join("\n")
+        ? (() => {
+          // Lead with the total. Split across three columns, no single figure
+          // carried the magnitude, so a 56-billion-token corpus read as a
+          // 1.4-million-token one.
+          const big = (value: number) => value >= 1e9 ? `${(value / 1e9).toFixed(1)}B`
+            : value >= 1e6 ? `${(value / 1e6).toFixed(1)}M`
+            : value.toLocaleString();
+          const totals = summary.reduce((sum, row) => ({
+            turns: sum.turns + row.turns,
+            total: sum.total + row.totalTokens,
+            cached: sum.cached + row.cacheReadTokens,
+          }), { turns: 0, total: 0, cached: 0 });
+          return [
+            `${totals.turns.toLocaleString()} turns   ${big(totals.total)} tokens   ` +
+            `${Math.round(100 * totals.cached / Math.max(totals.total, 1))}% of input served from cache`,
+            "",
+            `${"HARNESS".padEnd(9)} ${"HOST".padEnd(6)} ${"TURNS".padStart(8)} ${"TOTAL".padStart(8)} ${"FRESH".padStart(8)} ${"CACHED".padStart(8)} ${"OUT".padStart(8)}  SPAN`,
+            ...summary.map((row) =>
+              `${row.harness.padEnd(9)} ${(row.host ?? "local").padEnd(6)} ${String(row.turns).padStart(8)} ` +
+              `${big(row.totalTokens).padStart(8)} ${big(row.inputTokens).padStart(8)} ${big(row.cacheReadTokens).padStart(8)} ${big(row.outputTokens).padStart(8)}  ` +
+              `${row.first.slice(0, 10)} to ${row.last.slice(0, 10)}`),
+          ].join("\n");
+        })()
         : "no telemetry yet - run `mafia history --ingest`");
       return;
     }

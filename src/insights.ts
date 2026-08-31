@@ -65,11 +65,17 @@ function reasoningShare(store: TelemetryStore): Insight[] {
   });
 }
 
-/** Work is concentrated somewhere; knowing where says which model choice matters. */
+/**
+ * Work is concentrated somewhere, and that says which model choice matters.
+ *
+ * Measured on total tokens rather than output. Output is about a third of one
+ * percent of what a turn moves, so ranking by it ranks on noise.
+ */
 function concentration(store: TelemetryStore): Insight[] {
   const rows = store.db.query(`
-    SELECT model, COALESCE(SUM(output_tokens),0) output FROM turns
-    WHERE model IS NOT NULL GROUP BY model ORDER BY output DESC
+    SELECT model,
+      COALESCE(SUM(input_tokens + cache_read_tokens + cache_write_tokens + output_tokens),0) output
+    FROM turns WHERE model IS NOT NULL GROUP BY model ORDER BY output DESC
   `).all() as Array<{ model: string; output: number }>;
   const total = rows.reduce((sum, row) => sum + row.output, 0);
   const top = rows[0];
@@ -80,8 +86,8 @@ function concentration(store: TelemetryStore): Insight[] {
   if (share < 0.4) return [];
   return [{
     weight: top.output,
-    title: `${top.model} produces ${pct(share)} of all output`,
-    evidence: `${big(top.output)} of ${big(total)} output tokens across every harness and host.`,
+    title: `${top.model} accounts for ${pct(share)} of all tokens`,
+    evidence: `${big(top.output)} of ${big(total)} tokens across every harness and host.`,
     action: `Measure this model first: \`mafia bench --models ${top.model}\`. Its latency decides most of the fleet's wait.`,
   }];
 }
