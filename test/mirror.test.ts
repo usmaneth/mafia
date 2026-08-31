@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { sshControlOptions, withSshMultiplexing } from "../src/ssh";
 import { persistedToolPath, run, toolPath } from "../src/process";
 import { report } from "../src/updater";
+
 import { decodeSlice, wholeLines } from "../src/remote";
 import { mirrorExcludes, mirrorIsHealthy, watchTriggersMirror } from "../src/mirror";
 import type { MirrorReport } from "../src/types";
@@ -269,3 +270,4 @@ describe("persisted unit path", () => {
     expect(persistedToolPath({ HOME: "/home/test" })).toContain("/home/test/.bun/bin");
   });
 });
+
