@@ -354,6 +354,13 @@ export class JobStore {
     );
   }
 
+  /** Time-to-first-output for every job that recorded one. */
+  latencySamples(limit = 5000): Array<{ model: string | null; ttftMs: number | null }> {
+    return this.db.query(
+      "SELECT model, ttft_ms AS ttftMs FROM usage_metrics WHERE ttft_ms IS NOT NULL ORDER BY id DESC LIMIT ?",
+    ).all(limit) as Array<{ model: string | null; ttftMs: number | null }>;
+  }
+
   aggregateUsage(teamId?: string): UsageMetrics {
     const row = (teamId
       ? this.db.query(`

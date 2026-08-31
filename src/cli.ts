@@ -14,9 +14,11 @@ import { recommendParallelism } from "./scale";
 import { installUpdateAutomation, updateMafia } from "./updater";
 import { formatMirror, mirrorAll, mirrorIsHealthy, readMirrorState, watchMirror } from "./mirror";
 import { collectAll, formatGc } from "./gc";
-import { formatRoleChanges, healthyRoleModels, readConfiguredRoles } from "./roles";
+import { formatRoleChanges, formatRoleSuggestions, healthyRoleModels, readConfiguredRoles, suggestFasterRoles } from "./roles";
 import { formatMetrics, readMetrics, runBench, usableMetrics } from "./bench";
 import { formatDoctor, runDoctor } from "./doctor";
+import { formatSubagents } from "./format";
+import { readActivity } from "../hooks/subagent-activity";
 import {
   exhaustedProviders,
   accountBalance,
@@ -99,7 +101,8 @@ usage:
   mafia mirror [--watch] [--dry-run] [--force] [--host NAME] [--json]
   mafia gc [--dry-run] [--days N] [--host NAME] [--force] [--json]
   mafia quota [--refresh] [--model SELECTOR] [--json]
-  mafia roles [--json]
+  mafia roles [--json] [--suggest]
+  mafia subagents [--json]   what each OMP subagent is running and doing
   mafia bench [--models a,b] [--runs N] [--json]   measure real TTFT; spends quota
   mafia cleanse [--repo PATH] [--host NAME] [--agents N] [--all] [--tests] [REQUEST]
   mafia install-updater
@@ -123,7 +126,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     "help", "-h", "--help", "jobs", "status", "watch", "dispatch", "logs", "cancel", "handoff", "compare",
     "team", "hub", "message", "decisions", "decision", "events", "route", "budget", "protocol",
     "sync", "hosts", "install-remote", "eval", "__team-run", "doctor", "models", "scale", "update", "install-updater",
-    "vps", "__vps-refresh", "prs", "__prs-refresh", "mirror", "gc", "quota", "roles", "bench", "cleanse",
+    "vps", "__vps-refresh", "prs", "__prs-refresh", "mirror", "gc", "quota", "roles", "bench", "cleanse", "subagents",
   ]);
   if (!command || command === "shell" || command === "run" || !controlCommands.has(command)) {
     const { spawnSync } = await import("node:child_process");
@@ -412,6 +415,15 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
         for (const [role, model] of Object.entries(configured)) console.log(`  ${role.padEnd(9)} ${model}`);
         console.log("");
         console.log(formatRoleChanges(result.changes, result.unfixable));
+        if (has(args, "--suggest")) {
+          console.log("");
+          console.log(formatRoleSuggestions(suggestFasterRoles(
+            configured,
+            usableMetrics(mafia.config.stateRoot),
+            mafia.models.cached(),
+            unavailableProviders(usage, mafia.config.stateRoot),
+          )));
+        }
       }
       return;
     }
@@ -450,6 +462,11 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
         repo: option(args, "--repo") ?? process.cwd(),
       });
       console.log(`${job.id} ${job.harness}@${job.host} ${job.state}`);
+      return;
+    }
+    case "subagents": {
+      const rows = readActivity();
+      has(args, "--json") ? printJson(rows) : console.log(formatSubagents(rows));
       return;
     }
     case "install-updater":

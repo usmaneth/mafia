@@ -27,6 +27,9 @@ export interface HostConfig {
 export interface ModelMetric {
   selector: string;
   measuredAt: string;
+  /** `observed` comes from finished jobs; `benched` from a synthetic run. */
+  source?: "observed" | "benched";
+  samples?: number;
   /** Median time to first token, in milliseconds. */
   ttftMs?: number;
   tokensPerSecond?: number;
