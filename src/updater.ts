@@ -9,6 +9,7 @@ import { mirrorAll } from "./mirror";
 import { ingestTelemetry } from "./telemetry-ingest";
 import { ingestRemoteTelemetry } from "./telemetry-remote";
 import { ingestPrOutcomes } from "./pr-outcomes";
+import { changedChecks, runDoctor } from "./doctor";
 import { TelemetryStore } from "./telemetry-store";
 import { collectAll } from "./gc";
 import { persistedToolPath, shellQuote, toolEnvironment } from "./process";
@@ -254,6 +255,21 @@ export function updateMafia(options: { push?: boolean; deploy?: boolean; gcDays?
         results.push({ target: `${host.name}-telemetry`, status: "error", detail: error instanceof Error ? error.message.slice(0, 140) : String(error) });
       }
     }
+  }
+  if (options.telemetry) {
+    // Health is reported on the transition, not on the state. Repeating the
+    // same finding every five minutes is how a check stops being read.
+    try {
+      const stateRoot = loadConfig().stateRoot;
+      const changed = changedChecks(runDoctor(), stateRoot);
+      for (const check of changed) {
+        results.push({
+          target: `health:${check.name}`,
+          status: check.state === "ok" ? "ok" : check.state === "warn" ? "skipped" : "error",
+          detail: check.state === "ok" ? `recovered - ${check.detail}` : `${check.detail}${check.fix ? ` -> ${check.fix}` : ""}`,
+        });
+      }
+    } catch {}
   }
   if (typeof options.gcDays === "number") {
     // Reclaim after the mirror, so a worktree removal can never race a copy.
