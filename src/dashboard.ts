@@ -84,11 +84,12 @@ export function renderDashboard(stateRoot = loadConfig().stateRoot, now = Date.n
   // What the fleet actually runs on, and whether its speed is known.
   const scorecard = modelScorecard(stateRoot, 6);
   if (scorecard.length) {
-    out.push(rule("models by output"));
+    out.push(rule("models by total tokens"));
     out.push(barChart(scorecard.map((row) => ({
       label: row.model,
-      value: row.outputTokens,
-      note: `${(row.outputTokens / 1e6).toFixed(1)}M out  ${row.ttftMs ? `${row.ttftMs}ms` : "unmeasured"}`,
+      value: row.totalTokens,
+      note: `${row.totalTokens >= 1e9 ? `${(row.totalTokens / 1e9).toFixed(1)}B` : `${(row.totalTokens / 1e6).toFixed(0)}M`} total  ` +
+        `${(row.outputTokens / 1e6).toFixed(1)}M out  ${row.ttftMs ? `${row.ttftMs}ms` : "unmeasured"}`,
     })), 20, 26));
     out.push("");
   }

@@ -8,6 +8,7 @@ import { loadConfig, repoRoot } from "../src/config";
 import { MafiaService } from "../src/service";
 import { TeamService } from "../src/team";
 import { catalogCandidates, filterCatalog, ModelCatalogService } from "../src/models";
+import { showFleetDashboard } from "./fleet-dashboard";
 import { usableMetrics } from "../src/bench";
 import { recommendParallelism } from "../src/scale";
 import { readVpsTelemetry, refreshVpsTelemetry } from "../src/telemetry";
@@ -593,6 +594,13 @@ MAFIA DESIGN CHECKPOINT POLICY:
     description: "Open the Mafia agent hub",
     handler: async (_args, ctx) => {
       await showAgentDashboard(ctx);
+    },
+  });
+
+  pi.registerCommand("dash", {
+    description: "Open the Mafia fleet dashboard - quota, models, pull requests, and what to change",
+    handler: async (_args, ctx) => {
+      await showFleetDashboard(ctx);
     },
   });
 
