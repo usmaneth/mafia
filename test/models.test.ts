@@ -58,14 +58,20 @@ describe("model catalog", () => {
       }],
       sources: [],
     }));
+    // Discovery now repairs a minimal PATH by adding the per-user tool
+    // directories, so emptying PATH alone no longer hides the harness. HOME
+    // must move too, because those directories are derived from it.
     const originalPath = process.env.PATH;
+    const originalHome = process.env.HOME;
     process.env.PATH = "";
+    process.env.HOME = join(root, "empty-home");
     try {
       const catalog = new ModelCatalogService(root).discover(true);
       expect(catalog.models.some((model) => model.selector === "anthropic/claude-sonnet-5")).toBe(true);
       expect(catalog.sources.find((source) => source.harness === "omp")?.status).toBe("error");
     } finally {
       process.env.PATH = originalPath;
+      process.env.HOME = originalHome;
       rmSync(root, { recursive: true, force: true });
     }
   });

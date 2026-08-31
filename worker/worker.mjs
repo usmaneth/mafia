@@ -9,6 +9,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { basename, dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { homedir } from "node:os";
 
 const specPath = process.argv[2];
@@ -97,9 +98,18 @@ function detectedHarnessModel() {
       return providers?.cline?.settings?.model ?? providers?.["cline-pass"]?.settings?.model;
     }
     if (spec.harness === "omp") {
-      const path = join(home, ".omp", "profiles", "mafia", "agent", "config.yml");
-      if (!existsSync(path)) return undefined;
-      return readFileSync(path, "utf8").match(/^\s*default:\s*["']?([^"'#\s]+)["']?/m)?.[1];
+      // Ask OMP rather than reading its config file. A regex for `default:`
+      // matches the first one anywhere in the YAML, not the one under
+      // `modelRoles`, so any new section above it silently returned the wrong
+      // model. This file runs under plain Node, so a subprocess is the way in.
+      const result = spawnSync("omp", ["--profile", "mafia", "config", "get", "modelRoles", "--json"], {
+        encoding: "utf8",
+        timeout: 30_000,
+        maxBuffer: 4 * 1024 * 1024,
+      });
+      if (result.status !== 0) return undefined;
+      const value = JSON.parse(result.stdout)?.value?.default;
+      return typeof value === "string" && value.trim() ? value.trim() : undefined;
     }
   } catch {}
   return undefined;
@@ -174,14 +184,36 @@ function commandFor(cwd) {
         ...(model ? ["--model", model] : []), spec.prompt,
       ]];
     case "omp":
+      if (model?.startsWith("ollama/")) {
+        return ["node", [
+          join(dirname(fileURLToPath(import.meta.url)), "..", "scripts", "ollama-agent.mjs"),
+          "--model", model, "--cwd", cwd, "--prompt", spec.prompt,
+        ]];
+      }
       return ["omp", [
         "--profile", "mafia", "-p", "--mode", "json", "--approval-mode", "yolo",
-        "--cwd", cwd, "--no-session", "--no-extensions",
+        "--cwd", cwd, ...(spec.session ? [] : ["--no-session"]), "--no-extensions",
+        // Let OMP stop itself first. Its own limit ends the session cleanly and
+        // the agent still writes a result; the worker's timer below is the
+        // backstop that kills the process group when that does not happen.
+        ...(spec.timeoutSeconds ? ["--max-time", String(Math.max(30, spec.timeoutSeconds - 15))] : []),
+        // The lead works these out from live provider quota and puts them in
+        // the spec, because this file runs under plain Node and cannot.
+        ...roleArgs(spec.roleModels),
+        ...(spec.prewalk ? ["--prewalk"] : []),
+        ...(spec.prewalkInto ? ["--prewalk-into", spec.prewalkInto] : []),
         ...(model ? ["--model", model] : []), spec.prompt,
       ]];
     default:
       throw new Error(`Unsupported harness: ${spec.harness}`);
   }
+}
+
+/** OMP accepts smol, slow, and plan as model-role overrides. */
+function roleArgs(roles) {
+  if (!roles || typeof roles !== "object") return [];
+  return ["smol", "slow", "plan"].flatMap((role) =>
+    typeof roles[role] === "string" && roles[role] ? [`--${role}`, roles[role]] : []);
 }
 
 function contentText(content) {

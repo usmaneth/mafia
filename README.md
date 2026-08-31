@@ -75,7 +75,20 @@ Use `codex` for Codex.
 Use `opencode` for OpenCode.
 
 Use `omp` for models configured in OMP. Examples include Grok Build,
-Nemotron Ultra, and Gemini.
+Nemotron Ultra, Gemini, and the local Qwen 3.8 model.
+
+Use this selector for the local model:
+
+```text
+ollama/qwen3.8-27b-obliterated:q4_k_m
+```
+
+Import the tracked GGUF configuration with:
+
+```sh
+ollama create qwen3.8-27b-obliterated:q4_k_m \
+  --file models/qwen3.8-27b-obliterated.Modelfile
+```
 
 ## Safety
 

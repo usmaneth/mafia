@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 import { readFileSync } from "node:fs";
 import { ensureConfig, loadConfig, resolveHost } from "./config";
-import { formatHub, formatJobs, formatMessages, formatPrDashboard, formatTeam, formatTeams } from "./format";
+import { formatHub, formatJobs, formatMessages, formatModels, formatPrDashboard, formatTeam, formatTeams } from "./format";
 import { isHarnessName } from "./harnesses";
 import { buildOmpArgs } from "./launch";
 import { installRemote } from "./remote";
@@ -9,9 +9,24 @@ import { MafiaService } from "./service";
 import { TeamService } from "./team";
 import { protocolSpec } from "./protocols";
 import { routeTask } from "./router";
-import { catalogCandidates, filterCatalog, ModelCatalogService } from "./models";
+import { catalogCandidates, filterCatalog, ModelCatalogService, parseModelSelector } from "./models";
 import { recommendParallelism } from "./scale";
 import { installUpdateAutomation, updateMafia } from "./updater";
+import { formatMirror, mirrorAll, mirrorIsHealthy, readMirrorState, watchMirror } from "./mirror";
+import { collectAll, formatGc } from "./gc";
+import { formatRoleChanges, healthyRoleModels, readConfiguredRoles } from "./roles";
+import { formatMetrics, readMetrics, runBench, usableMetrics } from "./bench";
+import { formatDoctor, runDoctor } from "./doctor";
+import {
+  exhaustedProviders,
+  accountBalance,
+  formatAccountBalance,
+  formatProviderUsage,
+  providerHeadroom,
+  ProviderUsageService,
+  readPenalties,
+  unavailableProviders,
+} from "./provider-usage";
 import { readVpsTelemetry, refreshVpsTelemetry } from "./telemetry";
 import { formatVpsTelemetry } from "./format";
 import { codexOAuthEnvironment } from "./process";
@@ -25,6 +40,17 @@ function option(args: string[], name: string): string | undefined {
 
 function has(args: string[], name: string): boolean {
   return args.includes(name);
+}
+
+/**
+ * Attach an effort level to a model selector.
+ *
+ * `--effort high` is easier to remember than the `:high` suffix, and both reach
+ * the same selector. An explicit suffix on the model wins.
+ */
+function withEffort(model: string | undefined, effort: string | undefined): string | undefined {
+  if (!model || !effort) return model;
+  return parseModelSelector(model).effort ? model : `${model}:${effort}`;
 }
 
 function required(value: string | undefined, message: string): string {
@@ -44,7 +70,7 @@ usage:
   mafia jobs [--json] [--state STATE]
   mafia status
   mafia watch [--interval SECONDS]
-  mafia dispatch --prompt TEXT [--model MODEL] [--harness NAME] [--host NAME] [--repo PATH]
+  mafia dispatch --prompt TEXT [--model MODEL] [--effort LEVEL] [--prewalk] [--session] [--harness NAME] [--host NAME] [--repo PATH]
   mafia logs JOB [--lines N]
   mafia cancel JOB
   mafia handoff JOB --harness NAME [--host NAME] [--prompt TEXT]
@@ -67,9 +93,15 @@ usage:
   mafia decision TEAM --question TEXT --selected TEXT
   mafia events [--team TEAM] [--job JOB]
   mafia route --capability TYPE [--host HOST]
-  mafia models [--harness NAME] [--provider NAME] [--find TEXT] [--refresh] [--json]
+  mafia models [--harness NAME] [--provider NAME] [--find TEXT] [--effort LEVEL] [--refresh] [--json]
   mafia scale --tasks N [--ready N] [--risk low|medium|high]
-  mafia update [--push] [--deploy]
+  mafia update [--push] [--deploy] [--gc DAYS]
+  mafia mirror [--watch] [--dry-run] [--force] [--host NAME] [--json]
+  mafia gc [--dry-run] [--days N] [--host NAME] [--force] [--json]
+  mafia quota [--refresh] [--model SELECTOR] [--json]
+  mafia roles [--json]
+  mafia bench [--models a,b] [--runs N] [--json]   measure real TTFT; spends quota
+  mafia cleanse [--repo PATH] [--host NAME] [--agents N] [--all] [--tests] [REQUEST]
   mafia install-updater
   mafia vps [--refresh] [--all] [--json]
   mafia prs [--refresh] [--json] [--shepherd|--merge|--install]
@@ -79,7 +111,7 @@ usage:
   mafia hosts
   mafia install-remote HOST
   mafia eval [--live]
-  mafia doctor
+  mafia doctor [--json]
 
 Mafia supports 128 tasks in one team. OMP remains the main interface.`);
 }
@@ -91,7 +123,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     "help", "-h", "--help", "jobs", "status", "watch", "dispatch", "logs", "cancel", "handoff", "compare",
     "team", "hub", "message", "decisions", "decision", "events", "route", "budget", "protocol",
     "sync", "hosts", "install-remote", "eval", "__team-run", "doctor", "models", "scale", "update", "install-updater",
-    "vps", "__vps-refresh", "prs", "__prs-refresh",
+    "vps", "__vps-refresh", "prs", "__prs-refresh", "mirror", "gc", "quota", "roles", "bench", "cleanse",
   ]);
   if (!command || command === "shell" || command === "run" || !controlCommands.has(command)) {
     const { spawnSync } = await import("node:child_process");
@@ -115,11 +147,30 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
       has(args, "--json") ? printJson(jobs) : console.log(formatJobs(jobs));
       return;
     }
-    case "status":
+    case "status": {
+      const mirror = readMirrorState(mafia.config.stateRoot);
+      const quota = new ProviderUsageService(mafia.config.stateRoot).cached();
+      const benched = readPenalties(mafia.config.stateRoot);
+      const spent = [...exhaustedProviders(quota)];
+      if (benched.length) {
+        console.log(`benched: ${benched.map((entry) => `${entry.provider} until ${entry.until.slice(11, 16)}Z`).join(", ")}`);
+        console.log("");
+      }
+      if (spent.length) {
+        console.log(`quota: ${spent.join(", ")} at the limit - routing will avoid ${spent.length > 1 ? "them" : "it"}. mafia quota --refresh for detail.`);
+        console.log("");
+      }
+      if (!mirrorIsHealthy(mirror)) {
+        console.log(mirror
+          ? `mirror: ${mirror.verdict.toUpperCase()} - ${mirror.detail} (checked ${mirror.checkedAt})`
+          : "mirror: NEVER RUN - run `mafia mirror` to match the VPS to this machine.");
+        console.log("");
+      }
       console.log(formatTeams(teams.list(30)));
       console.log("");
       console.log(formatJobs(mafia.list(100)));
       return;
+    }
     case "watch": {
       const interval = Math.max(1, Number(option(args, "--interval") ?? 2));
       while (true) {
@@ -140,9 +191,12 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
         host: option(args, "--host"),
         repo: option(args, "--repo"),
         cwd: option(args, "--cwd"),
-        model: option(args, "--model"),
+        model: withEffort(option(args, "--model"), option(args, "--effort")),
         baseRef: option(args, "--base"),
         isolate: has(args, "--no-isolate") ? false : undefined,
+        prewalk: has(args, "--prewalk"),
+        session: has(args, "--session") ? true : undefined,
+        prewalkInto: option(args, "--prewalk-into"),
         labels: option(args, "--labels")?.split(",").filter(Boolean),
         timeoutSeconds: option(args, "--timeout") ? Number(option(args, "--timeout")) : undefined,
       });
@@ -261,28 +315,29 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
         limit: Number(option(args, "--limit") ?? 200),
       }));
       return;
-    case "route":
-      printJson(routeTask(loadConfig(), {
+    case "route": {
+      const config = loadConfig();
+      const quotaNow = new ProviderUsageService(config.stateRoot).discover();
+      printJson(routeTask(config, {
         capability: (option(args, "--capability") ?? "general") as any,
         host: option(args, "--host"),
         downgrade: has(args, "--cheap"),
-      }, new Map(), catalogCandidates(new ModelCatalogService(loadConfig().stateRoot).discover(), Object.keys(loadConfig().hosts))));
+        exhaustedProviders: unavailableProviders(quotaNow, config.stateRoot),
+        headroom: (provider) => providerHeadroom(quotaNow, provider),
+      }, new Map(), catalogCandidates(new ModelCatalogService(config.stateRoot).discover(), Object.keys(config.hosts), usableMetrics(config.stateRoot))));
       return;
+    }
     case "models": {
       const catalog = new ModelCatalogService(mafia.config.stateRoot).discover(has(args, "--refresh"));
       const filtered = filterCatalog(catalog, {
         harness: option(args, "--harness") as any,
         provider: option(args, "--provider"),
         query: option(args, "--find"),
+        effort: option(args, "--effort"),
         limit: Number(option(args, "--limit") ?? 50),
       });
       if (has(args, "--json")) printJson(filtered);
-      else {
-        console.log(`catalog: ${catalog.models.length} models - ${catalog.generatedAt}`);
-        console.log(catalog.sources.map((source) => `${source.harness}: ${source.status} (${source.count})${source.error ? ` - ${source.error}` : ""}`).join("\n"));
-        console.log("");
-        console.log(filtered.models.map((model) => `${model.harness}\t${model.provider}\t${model.selector}\t${model.name}`).join("\n") || "no matching models");
-      }
+      else console.log(formatModels(catalog, filtered.models));
       return;
     }
     case "scale":
@@ -296,8 +351,107 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
       }));
       return;
     case "update":
-      printJson(updateMafia({ push: has(args, "--push"), deploy: has(args, "--deploy") }));
+      printJson(updateMafia({
+        push: has(args, "--push"),
+        deploy: has(args, "--deploy"),
+        gcDays: has(args, "--gc") ? Number(option(args, "--gc") ?? 7) : undefined,
+      }));
       return;
+    case "mirror": {
+      if (has(args, "--watch")) {
+        const stop = watchMirror({
+          host: option(args, "--host"),
+          debounceMs: option(args, "--debounce") ? Number(option(args, "--debounce")) : undefined,
+        });
+        console.log("watching for changes - press Ctrl-C to stop");
+        process.on("SIGINT", () => {
+          stop();
+          process.exit(0);
+        });
+        await new Promise(() => {});
+        return;
+      }
+      const reports = mirrorAll({
+        dryRun: has(args, "--dry-run"),
+        force: has(args, "--force"),
+        host: option(args, "--host"),
+      });
+      has(args, "--json") ? printJson(reports) : console.log(formatMirror(reports));
+      if (reports.some((report) => !["synced", "current", "locked"].includes(report.verdict))) process.exitCode = 1;
+      return;
+    }
+    case "gc": {
+      const reports = collectAll({
+        dryRun: has(args, "--dry-run"),
+        force: has(args, "--force"),
+        host: option(args, "--host"),
+        olderThanDays: option(args, "--days") ? Number(option(args, "--days")) : undefined,
+      });
+      has(args, "--json") ? printJson(reports) : console.log(formatGc(reports));
+      return;
+    }
+    case "quota": {
+      const model = option(args, "--model");
+      if (model) {
+        const balance = accountBalance(model, Number(option(args, "--samples") ?? 20));
+        if (!balance) throw new Error(`Cannot resolve credentials for ${model}.`);
+        has(args, "--json") ? printJson(balance) : console.log(formatAccountBalance(balance));
+        return;
+      }
+      const usage = new ProviderUsageService(mafia.config.stateRoot).discover(has(args, "--refresh"));
+      has(args, "--json") ? printJson(usage) : console.log(formatProviderUsage(usage));
+      return;
+    }
+    case "roles": {
+      const configured = readConfiguredRoles();
+      const usage = new ProviderUsageService(mafia.config.stateRoot).discover();
+      const result = healthyRoleModels(configured, mafia.models.cached(), usage, mafia.config.stateRoot);
+      if (has(args, "--json")) printJson({ configured, ...result });
+      else {
+        console.log("configured OMP roles");
+        for (const [role, model] of Object.entries(configured)) console.log(`  ${role.padEnd(9)} ${model}`);
+        console.log("");
+        console.log(formatRoleChanges(result.changes, result.unfixable));
+      }
+      return;
+    }
+    case "bench": {
+      const models = option(args, "--models")?.split(",").map((value) => value.trim()).filter(Boolean) ?? [];
+      if (!models.length) {
+        const stored = readMetrics(mafia.config.stateRoot);
+        has(args, "--json") ? printJson(stored) : console.log(formatMetrics(stored.models));
+        return;
+      }
+      console.log(`measuring ${models.length} model(s) - this sends real requests and spends quota`);
+      const { measured } = runBench({
+        models,
+        runs: option(args, "--runs") ? Number(option(args, "--runs")) : undefined,
+        maxTokens: option(args, "--max-tokens") ? Number(option(args, "--max-tokens")) : undefined,
+        stateRoot: mafia.config.stateRoot,
+      });
+      has(args, "--json") ? printJson(measured) : console.log(formatMetrics(measured));
+      return;
+    }
+    case "cleanse": {
+      // OMP already fans out file-disjoint subagents to fix project
+      // diagnostics. Mafia's contribution is running it as a supervised job,
+      // on the VPS if asked, rather than reimplementing the fan-out.
+      const request = args.find((value) => !value.startsWith("--") && args[args.indexOf(value) - 1]?.startsWith("--") !== true);
+      const flags = [
+        ...(option(args, "--agents") ? ["--agents", option(args, "--agents")!] : []),
+        ...(has(args, "--all") ? ["--all"] : []),
+        ...(has(args, "--tests") ? ["--tests"] : []),
+      ].join(" ");
+      const job = mafia.dispatch({
+        title: `cleanse: ${request ?? "project diagnostics"}`,
+        prompt: `Run \`omp cleanse ${flags} ${request ? JSON.stringify(request) : ""}\`.trim() in this repository and report every diagnostic it fixed and every one it could not.`,
+        harness: "omp",
+        host: option(args, "--host"),
+        repo: option(args, "--repo") ?? process.cwd(),
+      });
+      console.log(`${job.id} ${job.harness}@${job.host} ${job.state}`);
+      return;
+    }
     case "install-updater":
       printJson(installUpdateAutomation());
       return;
@@ -374,13 +528,9 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
       await teams.run(required(args[0], "The team ID is required."));
       return;
     case "doctor": {
-      const config = loadConfig();
-      for (const binary of ["git", "node", "bun", "omp", "claude", "codex", "kimi", "cline", "opencode"]) {
-        const { spawnSync } = await import("node:child_process");
-        const result = spawnSync("sh", ["-c", `command -v ${binary}`], { encoding: "utf8" });
-        console.log(`${result.status === 0 ? "ok     " : "missing"} ${binary}${result.stdout ? `: ${result.stdout.trim()}` : ""}`);
-      }
-      console.log(`config: ${JSON.stringify(config.hosts, null, 2)}`);
+      const checks = runDoctor();
+      has(args, "--json") ? printJson(checks) : console.log(formatDoctor(checks));
+      if (checks.some((check) => check.state === "fail")) process.exitCode = 1;
       return;
     }
     default:

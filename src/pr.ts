@@ -1,6 +1,8 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { spawnSync } from "node:child_process";
+import { toolEnvironment } from "./process";
+import { withSshMultiplexing } from "./ssh";
 import { loadConfig, repoRoot, resolveHost } from "./config";
 import { shellQuote } from "./process";
 import type { PrOperationalState, PrTelemetry } from "./types";
@@ -51,9 +53,9 @@ export function refreshPrTelemetry(force = false): PrTelemetry {
   const remote = "/home/usman/mafia/src/pr-probe.ts";
   const command = `sudo -iu ${shellQuote(host.defaultUser ?? "usman")} bash -lc ` +
     shellQuote(`/home/usman/.bun/bin/bun ${remote}`);
-  const result = spawnSync("ssh", [
+  const result = spawnSync("ssh", withSshMultiplexing("ssh", [
     "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", host.target, command,
-  ], { encoding: "utf8", timeout: 45_000, maxBuffer: 4 * 1024 * 1024 });
+  ]), { encoding: "utf8", env: toolEnvironment(), timeout: 45_000, maxBuffer: 4 * 1024 * 1024 });
   let value: PrTelemetry;
   if (result.status === 0) {
     value = JSON.parse(result.stdout) as PrTelemetry;
@@ -93,10 +95,10 @@ export function runPrAutomation(action: PrAutomationAction): void {
   const host = resolveHost(loadConfig(), "vps");
   if (!host.target) throw new Error("The VPS target is not configured.");
   const unit = action === "shepherd" ? "pr-shepherd.service" : "pr-automerge.service";
-  const result = spawnSync("ssh", [
+  const result = spawnSync("ssh", withSshMultiplexing("ssh", [
     "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", host.target,
     `systemctl start ${unit}`,
-  ], { cwd: repoRoot, encoding: "utf8", timeout: 15_000 });
+  ]), { cwd: repoRoot, encoding: "utf8", env: toolEnvironment(), timeout: 15_000 });
   if (result.status !== 0) {
     throw new Error((result.stderr || result.stdout || `Cannot start ${unit}.`).trim());
   }
@@ -113,10 +115,10 @@ export function installPrAutomation(): void {
     "pr-shepherd.timer",
   ];
   for (const file of files) {
-    const result = spawnSync("scp", [
+    const result = spawnSync("scp", withSshMultiplexing("scp", [
       join(repoRoot, "deploy", file),
       `${host.target}:/tmp/${file}`,
-    ], { encoding: "utf8", timeout: 30_000 });
+    ]), { encoding: "utf8", env: toolEnvironment(), timeout: 30_000 });
     if (result.status !== 0) throw new Error((result.stderr || `Cannot upload ${file}.`).trim());
   }
   const install = [
@@ -131,6 +133,6 @@ export function installPrAutomation(): void {
     "python3 -c 'import json; p=\"/home/usman/.hermes/cron/jobs.json\"; d=json.load(open(p)); [j.update(enabled=False) for j in d.get(\"jobs\",[]) if j.get(\"name\")==\"pr-shepherd\"]; json.dump(d,open(p,\"w\"),indent=2)'",
     "systemctl enable --now pr-automerge.timer pr-shepherd.timer",
   ].join(" && ");
-  const result = spawnSync("ssh", [host.target, install], { encoding: "utf8", timeout: 45_000 });
+  const result = spawnSync("ssh", withSshMultiplexing("ssh", [host.target, install]), { encoding: "utf8", env: toolEnvironment(), timeout: 45_000 });
   if (result.status !== 0) throw new Error((result.stderr || result.stdout || "Cannot install PR automation.").trim());
 }

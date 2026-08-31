@@ -23,6 +23,52 @@ export interface HostConfig {
   maxParallel?: number;
 }
 
+/** OMP model roles, keyed by role name (smol, slow, plan, task, advisor, designer). */
+export interface ModelMetric {
+  selector: string;
+  measuredAt: string;
+  /** Median time to first token, in milliseconds. */
+  ttftMs?: number;
+  tokensPerSecond?: number;
+  error?: string;
+}
+
+export interface ModelMetrics {
+  generatedAt: string;
+  models: Record<string, ModelMetric>;
+}
+
+export type RoleModels = Record<string, string>;
+
+export interface ProviderQuota {
+  provider: string;
+  /** Fraction of the tightest window consumed, 0 to 1. */
+  usedFraction: number;
+  bindingWindow?: string;
+  resetsAt?: string;
+  error?: string;
+}
+
+export interface ProviderUsage {
+  generatedAt: string;
+  providers: ProviderQuota[];
+}
+
+export const mirrorVerdicts = ["synced", "current", "drift", "conflict", "unreachable", "locked", "error"] as const;
+export type MirrorVerdict = (typeof mirrorVerdicts)[number];
+
+export interface MirrorReport {
+  host: string;
+  verdict: MirrorVerdict;
+  detail: string;
+  localDigest: string;
+  remoteDigest: string;
+  changedFiles: number;
+  conflicts: string[];
+  durationMs: number;
+  checkedAt: string;
+}
+
 export interface MafiaConfig {
   version: number;
   defaultHost: string;
@@ -33,6 +79,8 @@ export interface MafiaConfig {
   routing?: RoutingConfig;
   defaultBudget?: TeamBudget;
   vaultRoot?: string;
+  /** Keep OMP sessions for every job. Unlocks resume, memory, and compaction. */
+  ompSessions?: boolean;
 }
 
 export interface JobSpec {
@@ -44,7 +92,7 @@ export interface JobSpec {
   repo?: string;
   cwd?: string;
   model?: string;
-  modelSource?: "requested" | "configured" | "detected" | "observed";
+  modelSource?: "requested" | "configured" | "detected" | "observed" | "quota-substituted";
   baseRef?: string;
   isolate: boolean;
   parentId?: string;
@@ -59,6 +107,31 @@ export interface JobSpec {
   workspacePatchPath?: string;
   workspaceArchivePath?: string;
   budget?: TeamBudget;
+  /**
+   * OMP role models pinned to providers that can take work.
+   *
+   * Computed on the lead, which can read quota, and carried in the spec because
+   * the worker runs under Node on the VPS and cannot import the TypeScript that
+   * works it out.
+   */
+  roleModels?: RoleModels;
+  /**
+   * Switch to a cheaper model once the plan's todo list exists.
+   *
+   * Planning needs the strong model; carrying out a written list often does
+   * not. OMP does the switch itself, so this is spend saved for no extra work.
+   */
+  prewalk?: boolean;
+  prewalkInto?: string;
+  /**
+   * Keep the OMP session instead of running ephemerally.
+   *
+   * Sessions are what `--resume`, cross-harness import, transcript rendering,
+   * memory, and context compaction all attach to. Mafia has always passed
+   * `--no-session`, so none of those were reachable. Off by default because a
+   * large fleet writing sessions changes disk behaviour on the VPS.
+   */
+  session?: boolean;
 }
 
 export interface JobStatus extends JobSpec {
@@ -244,6 +317,8 @@ export interface RoutingCandidate {
   latency: number;
   contextTokens?: number;
   provider?: string;
+  /** True when `latency` came from a measurement rather than a name pattern. */
+  latencyMeasured?: boolean;
 }
 
 export interface ModelRecord {
@@ -257,6 +332,10 @@ export interface ModelRecord {
   contextWindow?: number;
   maxTokens?: number;
   reasoning?: boolean;
+  /** Effort levels this model accepts, most economical first. */
+  efforts?: string[];
+  /** The effort chosen for this selection, when one was requested. */
+  effort?: string;
   input?: string[];
   aliases?: string[];
   cost?: {

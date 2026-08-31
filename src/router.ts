@@ -11,6 +11,22 @@ export interface RouteInput {
   preferredModels?: string[];
   host?: string;
   downgrade?: boolean;
+  /**
+   * Providers with no quota headroom left.
+   *
+   * Routing had no view of provider limits, so a provider at 99% of its window
+   * drew the same share of work as one at 2%. A fleet then spent the last of a
+   * weekly allowance on whichever task happened to be next.
+   */
+  exhaustedProviders?: ReadonlySet<string>;
+  /**
+   * Remaining quota per provider, 0 to 1.
+   *
+   * A hard cut-off alone still sends every task to whichever provider is
+   * closest to full until the moment it tips over. Scoring on headroom spreads
+   * work before that happens, so a window empties slowly instead of all at once.
+   */
+  headroom?: (provider: string | undefined) => number;
 }
 
 export function routeTask(
@@ -38,10 +54,17 @@ export function rankTaskRoutes(
     if (!config.hosts[candidate.host]) return false;
     if (input.host && candidate.host !== input.host) return false;
     if (input.preferredModels?.length && candidate.model && !input.preferredModels.includes(candidate.model)) return false;
+    if (candidate.provider && input.exhaustedProviders?.has(candidate.provider)) return false;
     return candidate.capabilities.includes(input.capability) || candidate.capabilities.includes("general");
   });
+  // Never route to nothing. When every provider is spent the caller still needs
+  // a decision, so fall back to the full set and let the reason say why.
+  if (!candidates.length && input.exhaustedProviders?.size) {
+    return rankTaskRoutes(config, { ...input, exhaustedProviders: undefined }, history, discovered)
+      .map((route) => ({ ...route, reasons: [...route.reasons, "every provider is at its quota limit"] }));
+  }
   const scored = candidates.map((candidate) =>
-    scoreCandidate(candidate, history, input.downgrade ?? false, !input.host));
+    scoreCandidate(candidate, history, input.downgrade ?? false, !input.host, input.headroom));
   scored.sort((a, b) => b.score - a.score);
   const seen = new Set<string>();
   return scored.filter((route) => {
@@ -57,6 +80,7 @@ function scoreCandidate(
   history: Map<string, UsageMetrics>,
   downgrade: boolean,
   preferRemote: boolean,
+  headroom?: (provider: string | undefined) => number,
 ): RouteDecision {
   const key = `${candidate.harness}:${candidate.model ?? ""}:${candidate.host}`;
   const metrics = history.get(key);
@@ -64,7 +88,11 @@ function scoreCandidate(
   const costPenalty = candidate.costWeight * (downgrade ? 35 : 15);
   const latencyPenalty = candidate.latency * 8;
   const remoteBonus = preferRemote && candidate.host !== "local" ? 20 : 0;
-  const score = candidate.quality * 100 - costPenalty - latencyPenalty - failureRate * 60 + remoteBonus;
+  // Weight headroom hard enough to break a tie between comparable models, but
+  // not so hard that a nearly-full premium provider loses to a weak free one.
+  const left = headroom ? headroom(candidate.provider) : 1;
+  const headroomBonus = headroom ? (left - 1) * 45 : 0;
+  const score = candidate.quality * 100 - costPenalty - latencyPenalty - failureRate * 60 + remoteBonus + headroomBonus;
   return {
     harness: candidate.harness,
     model: candidate.model,
@@ -77,6 +105,7 @@ function scoreCandidate(
       metrics ? `observed failure rate ${(failureRate * 100).toFixed(1)}%` : "no observed failures",
       downgrade ? "budget downgrade active" : "normal budget mode",
       remoteBonus ? "VPS-first execution" : "requested host",
+      headroom ? `${Math.round(left * 100)}% provider quota left` : "provider quota unknown",
     ],
   };
 }
@@ -115,6 +144,18 @@ export function defaultCandidates(): RoutingCandidate[] {
       quality: 0.95,
       latency: 0.75,
       provider: "openai-codex",
+    },
+    {
+      harness: "omp",
+      model: "ollama/qwen3.8-27b-obliterated:q3_k_m",
+      host: "local",
+      capabilities: ["implementation", "testing", "review"],
+      enabled: true,
+      costWeight: 0,
+      quality: 0.81,
+      latency: 0.5,
+      contextTokens: 32768,
+      provider: "ollama",
     },
     {
       harness: "omp",

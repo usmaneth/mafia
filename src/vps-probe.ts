@@ -10,6 +10,16 @@ function command(name: string, args: string[]): string {
   return result.status === 0 ? result.stdout.trim() : "";
 }
 
+function pidAlive(pid?: number): boolean {
+  if (!pid || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function jobs(stateRoot: string): JobStatus[] {
   const root = join(stateRoot, "jobs");
   if (!existsSync(root)) return [];
@@ -97,8 +107,11 @@ function main(): void {
   const stateRoot = join(homedir(), ".local", "share", "mafia");
   const repoPath = "/home/usman/mafia";
   const allJobs = jobs(stateRoot);
+  const claimed = allJobs.filter((job) => ["queued", "starting", "running"].includes(job.state));
+  const live = claimed.filter((job) => pidAlive(job.pid));
+  const ghosts = claimed.length - live.length;
   const byHarness: Record<string, number> = {};
-  for (const job of allJobs.filter((item) => ["queued", "starting", "running"].includes(item.state))) {
+  for (const job of live) {
     byHarness[job.harness] = (byHarness[job.harness] ?? 0) + 1;
   }
   let catalog: ModelCatalog | undefined;
@@ -144,14 +157,14 @@ function main(): void {
     },
     jobs: {
       total: allJobs.length,
-      running: allJobs.filter((job) => ["queued", "starting", "running"].includes(job.state)).length,
+      running: live.length,
       failed: allJobs.filter((job) => job.state === "failed").length,
-      lost: allJobs.filter((job) => job.state === "lost").length,
+      lost: allJobs.filter((job) => job.state === "lost").length + ghosts,
       byHarness,
       recent: [...allJobs].sort((left, right) => right.updatedAt.localeCompare(left.updatedAt)).slice(0, 12).map((job) => ({
         id: job.id,
         title: job.title,
-        state: job.state,
+        state: ["queued", "starting", "running"].includes(job.state) && !pidAlive(job.pid) ? "lost" : job.state,
         harness: job.harness,
         model: job.model,
         updatedAt: job.updatedAt,

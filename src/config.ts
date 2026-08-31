@@ -21,6 +21,7 @@ export function defaultConfig(): MafiaConfig {
     defaultHarness: "codex",
     stateRoot: join(homedir(), ".local", "share", "mafia"),
     vaultRoot: join(homedir(), "vault"),
+    ompSessions: false,
     harnessModels: {
       opencode: "opencode/nemotron-3-ultra-free",
     },
