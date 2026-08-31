@@ -107,7 +107,7 @@ usage:
   mafia quota [--refresh] [--model SELECTOR] [--json]
   mafia roles [--json] [--suggest]
   mafia subagents [--json]   what each OMP subagent is running and doing
-  mafia history [--ingest] [--remote] [--models] [--json]   telemetry across every harness and host
+  mafia history [--ingest] [--remote] [--models] [--tools] [--prs] [--json]
   mafia insights [--json]    what the telemetry says to change next
   mafia bench [--models a,b] [--runs N] [--json]   measure real TTFT; spends quota
   mafia cleanse [--repo PATH] [--host NAME] [--agents N] [--all] [--tests] [REQUEST]
@@ -496,11 +496,27 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
         }
         if (has(args, "--json")) return;
       }
+      if (has(args, "--tools")) {
+        const rows = store.toolUsage(Number(option(args, "--limit") ?? 15));
+        has(args, "--json") ? printJson(rows) : console.log(rows.length
+          ? ["tool use across every harness", ...rows.map((row) =>
+            `  ${String(row.calls).padStart(8)} calls  ${row.harness.padEnd(8)} ${row.tool}`)].join("\n")
+          : "no tool calls recorded yet - run `mafia history --ingest`");
+        return;
+      }
+      if (has(args, "--prs")) {
+        const rows = store.prStates(Number(option(args, "--days") ?? 14));
+        has(args, "--json") ? printJson(rows) : console.log(rows.length
+          ? ["pull-request states observed by the merge watcher", ...rows.map((row) =>
+            `  ${String(row.observations).padStart(6)} observations  peak ${String(row.peak).padStart(3)}  ${row.state}`)].join("\n")
+          : "no pull-request observations yet");
+        return;
+      }
       if (has(args, "--models")) {
         const rows = store.modelLatency(Number(option(args, "--min") ?? 5));
         has(args, "--json") ? printJson(rows) : console.log(rows.length
           ? ["model latency across every harness", ...rows.map((row) =>
-            `  ${String(Math.round(row.medianTtftMs)).padStart(7)}ms  ${row.model} (${row.harness}, ${row.turns} turns)`)].join("\n")
+            `  ${String(Math.round(row.medianMs)).padStart(7)}ms  ${row.model} (${row.harness}, ${row.turns} turns)`)].join("\n")
           : "no latency recorded yet");
         return;
       }

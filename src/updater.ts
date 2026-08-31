@@ -8,6 +8,7 @@ import { installPrAutomation } from "./pr";
 import { mirrorAll } from "./mirror";
 import { ingestTelemetry } from "./telemetry-ingest";
 import { ingestRemoteTelemetry } from "./telemetry-remote";
+import { ingestPrOutcomes } from "./pr-outcomes";
 import { TelemetryStore } from "./telemetry-store";
 import { collectAll } from "./gc";
 import { persistedToolPath, shellQuote, toolEnvironment } from "./process";
@@ -222,6 +223,16 @@ export function updateMafia(options: { push?: boolean; deploy?: boolean; gcDays?
         const last = store.db.query(
           "SELECT MAX(ingested_at) at FROM sources WHERE harness = ?",
         ).get(`remote:${host.name}`) as { at: string | null } | null;
+        // Outcomes are a single tail, not a database transfer, so they run on
+        // every pass rather than behind the gate that exists for the pull.
+        const outcomes = ingestPrOutcomes(host, stateRoot);
+        results.push({
+          target: `${host.name}-outcomes`,
+          status: outcomes.observations ? "ok" : "error",
+          detail: outcomes.observations
+            ? `Recorded ${outcomes.added} new of ${outcomes.observations} pull-request observation(s).`
+            : outcomes.detail,
+        });
         const age = last?.at ? Date.now() - new Date(last.at).getTime() : Number.POSITIVE_INFINITY;
         if (age < 60 * 60_000) continue;
         const report = ingestRemoteTelemetry(host);
