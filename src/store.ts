@@ -203,7 +203,16 @@ export class JobStore {
     return job;
   }
 
+  /**
+   * Record an event.
+   *
+   * A worker pulses every five seconds, which made heartbeats 95% of this
+   * table: 12,366 rows of 12,982. Liveness already lives on the job's status
+   * file and its `heartbeatAt` field, so keeping a row per pulse buried the
+   * events that carry meaning and made every listing pay for them.
+   */
   insertEvent(event: MafiaEvent): void {
+    if (event.type === "presence.heartbeat") return;
     this.db.query(`
       INSERT OR IGNORE INTO events (id,team_id,job_id,host,actor,type,data_json,created_at)
       VALUES ($id,$teamId,$jobId,$host,$actor,$type,$data,$createdAt)
@@ -306,7 +315,9 @@ export class JobStore {
    */
   pruneEvents(olderThanDays = 30): number {
     const cutoff = new Date(Date.now() - olderThanDays * 86_400_000).toISOString();
-    return this.db.query("DELETE FROM events WHERE created_at < ?").run(cutoff).changes;
+    // Heartbeats already recorded go regardless of age; nothing reads them.
+    const pulses = this.db.query("DELETE FROM events WHERE type = 'presence.heartbeat'").run().changes;
+    return pulses + this.db.query("DELETE FROM events WHERE created_at < ?").run(cutoff).changes;
   }
 
   insertDecision(decision: DecisionRecord): void {

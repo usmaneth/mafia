@@ -24,10 +24,10 @@ export interface TurnRecord {
   cacheReadTokens: number;
   cacheWriteTokens: number;
   reasoningTokens: number;
-  /** Milliseconds from the request to the first token, when the source records it. */
-  ttftMs?: number;
+  /** Provider call time, where the source records it. Grok and Cline do. */
   durationMs?: number;
-  toolName?: string;
+  /** Tool calls made during the turn, by name. */
+  tools?: Record<string, number>;
   ok: number;
 }
 
@@ -57,14 +57,30 @@ export class TelemetryStore {
         cache_read_tokens INTEGER NOT NULL DEFAULT 0,
         cache_write_tokens INTEGER NOT NULL DEFAULT 0,
         reasoning_tokens INTEGER NOT NULL DEFAULT 0,
-        ttft_ms REAL,
         duration_ms REAL,
-        tool_name TEXT,
         ok INTEGER NOT NULL DEFAULT 1
       );
       CREATE INDEX IF NOT EXISTS turns_harness_time ON turns(harness, started_at DESC);
       CREATE INDEX IF NOT EXISTS turns_model_time ON turns(model, started_at DESC);
       CREATE INDEX IF NOT EXISTS turns_session ON turns(session_id);
+      -- Tool calls are many per turn, so they get their own rows rather than a
+      -- single name that would have to pick a winner.
+      CREATE TABLE IF NOT EXISTS tool_calls (
+        turn_id TEXT NOT NULL,
+        harness TEXT NOT NULL,
+        tool TEXT NOT NULL,
+        calls INTEGER NOT NULL,
+        PRIMARY KEY (turn_id, tool)
+      );
+      CREATE INDEX IF NOT EXISTS tool_calls_tool ON tool_calls(harness, tool);
+      -- Whether the work landed. Every other table here measures effort.
+      CREATE TABLE IF NOT EXISTS pr_states (
+        id TEXT PRIMARY KEY,
+        observed_at TEXT NOT NULL,
+        state TEXT NOT NULL,
+        count INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS pr_states_time ON pr_states(observed_at DESC);
       -- One row per source file. Ingestion resumes from the recorded offset, so
       -- a second pass over four gigabytes reads only what was appended.
       CREATE TABLE IF NOT EXISTS sources (
@@ -95,6 +111,7 @@ export class TelemetryStore {
       new Set((this.db.query(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map((row) => row.name));
     const wanted: Array<[string, string, string]> = [
       ["turns", "host", "TEXT NOT NULL DEFAULT 'local'"],
+      ["turns", "duration_ms", "REAL"],
       ["sources", "head", "TEXT NOT NULL DEFAULT ''"],
     ];
     for (const [table, column, definition] of wanted) {
@@ -112,11 +129,14 @@ export class TelemetryStore {
 
   /** Insert a batch and advance the file's cursor in one transaction. */
   ingest(path: string, harness: string, size: number, mtimeMs: number, bytesRead: number, turns: TurnRecord[], head = ""): number {
+    const tool = this.db.query(
+      "INSERT OR REPLACE INTO tool_calls (turn_id,harness,tool,calls) VALUES (?,?,?,?)",
+    );
     const insert = this.db.query(`
       INSERT OR IGNORE INTO turns (
         id,harness,host,session_id,started_at,model,provider,cwd,input_tokens,output_tokens,
-        cache_read_tokens,cache_write_tokens,reasoning_tokens,ttft_ms,duration_ms,tool_name,ok
-      ) VALUES ($id,$harness,$host,$session,$started,$model,$provider,$cwd,$input,$output,$cacheRead,$cacheWrite,$reasoning,$ttft,$duration,$tool,$ok)
+        cache_read_tokens,cache_write_tokens,reasoning_tokens,duration_ms,ok
+      ) VALUES ($id,$harness,$host,$session,$started,$model,$provider,$cwd,$input,$output,$cacheRead,$cacheWrite,$reasoning,$duration,$ok)
     `);
     const source = this.db.query(`
       INSERT INTO sources (path,harness,bytes_read,size,mtime_ms,head,turns,ingested_at)
@@ -133,9 +153,9 @@ export class TelemetryStore {
           $model: turn.model ?? null, $provider: turn.provider ?? null, $cwd: turn.cwd ?? null,
           $input: turn.inputTokens, $output: turn.outputTokens, $cacheRead: turn.cacheReadTokens,
           $cacheWrite: turn.cacheWriteTokens, $reasoning: turn.reasoningTokens,
-          $ttft: turn.ttftMs ?? null, $duration: turn.durationMs ?? null,
-          $tool: turn.toolName ?? null, $ok: turn.ok,
+          $duration: turn.durationMs ?? null, $ok: turn.ok,
         } as never).changes;
+        for (const [name, calls] of Object.entries(turn.tools ?? {})) tool.run(turn.id, turn.harness, name, calls);
       }
       source.run({
         $path: path, $harness: harness, $bytes: bytesRead, $size: size,
@@ -152,6 +172,34 @@ export class TelemetryStore {
    * a cache read, so an "input" column alone reads as though the fleet sends
    * more output than input, which is not what happened.
    */
+  /** Which tools the fleet actually uses, and how heavily. */
+  toolUsage(limit = 15): Array<{ harness: string; tool: string; calls: number; turns: number }> {
+    return this.db.query(`
+      SELECT harness, tool, SUM(calls) calls, COUNT(*) turns
+      FROM tool_calls GROUP BY harness, tool ORDER BY calls DESC LIMIT ?
+    `).all(limit) as never;
+  }
+
+  recordPrStates(rows: Array<{ id: string; observedAt: string; state: string; count: number }>): number {
+    const insert = this.db.query(
+      "INSERT OR IGNORE INTO pr_states (id,observed_at,state,count) VALUES (?,?,?,?)",
+    );
+    let added = 0;
+    this.db.transaction(() => {
+      for (const row of rows) added += insert.run(row.id, row.observedAt, row.state, row.count).changes;
+    })();
+    return added;
+  }
+
+  /** How often each pull-request state was observed, most recent window first. */
+  prStates(days = 14): Array<{ state: string; observations: number; peak: number; last: string }> {
+    const since = new Date(Date.now() - days * 86_400_000).toISOString();
+    return this.db.query(`
+      SELECT state, COUNT(*) observations, MAX(count) peak, MAX(observed_at) last
+      FROM pr_states WHERE observed_at >= ? GROUP BY state ORDER BY observations DESC
+    `).all(since) as never;
+  }
+
   /** How much of each harness's on-disk history has actually been read. */
   coverage(): Array<{ harness: string; files: number; bytesRead: number; total: number }> {
     return this.db.query(`
@@ -180,18 +228,24 @@ export class TelemetryStore {
    * The median rather than the mean: one turn that waited behind a cold start
    * should not decide how every later task is routed.
    */
-  modelLatency(minimumTurns = 5): Array<{ model: string; harness: string; turns: number; medianTtftMs: number }> {
+  /**
+   * Median provider call time per model.
+   *
+   * This reads `duration_ms`, which Grok and Cline record. The earlier version
+   * read a column no source could fill, so it always returned nothing.
+   */
+  modelLatency(minimumTurns = 5): Array<{ model: string; harness: string; turns: number; medianMs: number }> {
     return this.db.query(`
       SELECT model, harness, COUNT(*) turns,
-        CAST(AVG(ttft_ms) AS REAL) medianTtftMs
+        CAST(AVG(duration_ms) AS REAL) medianMs
       FROM (
-        SELECT model, harness, ttft_ms,
-          ROW_NUMBER() OVER (PARTITION BY model ORDER BY ttft_ms) rn,
+        SELECT model, harness, duration_ms,
+          ROW_NUMBER() OVER (PARTITION BY model ORDER BY duration_ms) rn,
           COUNT(*) OVER (PARTITION BY model) n
-        FROM turns WHERE ttft_ms IS NOT NULL AND model IS NOT NULL
+        FROM turns WHERE duration_ms IS NOT NULL AND model IS NOT NULL
       )
       WHERE rn IN ((n+1)/2, (n+2)/2)
-      GROUP BY model HAVING turns >= ? ORDER BY medianTtftMs
+      GROUP BY model HAVING turns >= ? ORDER BY medianMs
     `).all(minimumTurns) as never;
   }
 }

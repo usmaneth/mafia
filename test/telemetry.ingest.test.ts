@@ -142,3 +142,73 @@ describe("incremental ingestion", () => {
     expect(ingestTelemetry(state, { sources: source(sessions) })[0]!.turns).toBe(1);
   });
 });
+
+import { parseAutomergeLog } from "../src/pr-outcomes";
+import { parseGrok, parseKimi, parseCline } from "../src/telemetry-ingest";
+
+describe("tool extraction", () => {
+  test("counts the tools a claude turn reached for", () => {
+    const line = JSON.stringify({
+      type: "assistant", sessionId: "s", uuid: "u", timestamp: "2026-08-01T00:00:00.000Z",
+      message: {
+        model: "m", usage: { output_tokens: 1 },
+        content: [{ type: "tool_use", name: "Bash" }, { type: "tool_use", name: "Bash" }, { type: "text", text: "x" }],
+      },
+    });
+    expect(parseClaude([line], "p")[0]!.tools).toEqual({ Bash: 2 });
+  });
+
+  test("leaves tools undefined when a turn used none", () => {
+    expect(parseClaude([claudeLine()], "p")[0]!.tools).toBeUndefined();
+  });
+});
+
+describe("grok and kimi shapes", () => {
+  test("reads grok's nested usage and unix-second stamp", () => {
+    // Grok nests under params.update and stamps in seconds, not an ISO string.
+    const line = JSON.stringify({
+      timestamp: 1787007786,
+      params: { sessionId: "g1", update: { usage: { inputTokens: 10, outputTokens: 2, cachedReadTokens: 5 } } },
+    });
+    const [turn] = parseGrok([line], "/a/g1/updates.jsonl");
+    expect(turn!.inputTokens).toBe(10);
+    expect(turn!.startedAt.startsWith("2026-")).toBe(true);
+  });
+
+  test("reads kimi's usage.record line and binds the model once", () => {
+    const lines = [
+      JSON.stringify({ type: "profile.bind", modelAlias: "kimi-code/k3" }),
+      JSON.stringify({ type: "usage.record", usage: { inputOther: 9, output: 3, inputCacheRead: 1 }, time: 1787271978084 }),
+    ];
+    const [turn] = parseKimi(lines, "/a/s/agents/main/wire.jsonl");
+    expect(turn!.model).toBe("kimi-code/k3");
+    expect(turn!.cacheReadTokens).toBe(1);
+  });
+
+  test("cline records an outcome even with no tokens", () => {
+    // It is the only source here that says whether the session ended cleanly.
+    const json = JSON.stringify({
+      session_id: "c1", started_at: "2026-08-01T00:00:00.000Z",
+      ended_at: "2026-08-01T00:00:30.000Z", exit_code: 1, model: "m",
+    });
+    const [turn] = parseCline([json], "p");
+    expect(turn!.ok).toBe(0);
+    expect(turn!.durationMs).toBe(30_000);
+  });
+});
+
+describe("pull-request outcomes", () => {
+  test("reads each state and count off a watcher line", () => {
+    const value = parseAutomergeLog("2026-08-31 22:33:28Z  pass: awaiting-approval=1  checks-pending=2");
+    expect(value.map((row) => [row.state, row.count])).toEqual([["awaiting-approval", 1], ["checks-pending", 2]]);
+  });
+
+  test("gives an observation the same id every time, so a re-read cannot inflate it", () => {
+    const line = "2026-08-31 22:33:28Z  pass: queued=3";
+    expect(parseAutomergeLog(line)[0]!.id).toBe(parseAutomergeLog(line)[0]!.id);
+  });
+
+  test("ignores lines with no timestamp", () => {
+    expect(parseAutomergeLog("starting up, queued=9")).toHaveLength(0);
+  });
+});

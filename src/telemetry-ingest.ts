@@ -25,6 +25,16 @@ function id(...parts: Array<string | number | undefined>): string {
   return createHash("sha1").update(parts.map(String).join(" ")).digest("hex").slice(0, 20);
 }
 
+/** Tally tool names out of a content array. */
+function countTools(parts: unknown[], name: (part: unknown) => string | undefined): Record<string, number> | undefined {
+  const tally: Record<string, number> = {};
+  for (const part of parts) {
+    const value = name(part);
+    if (value) tally[value] = (tally[value] ?? 0) + 1;
+  }
+  return Object.keys(tally).length ? tally : undefined;
+}
+
 function num(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }
@@ -59,6 +69,9 @@ export function parseClaude(lines: string[], path: string): TurnRecord[] {
       cacheReadTokens: num(usage.cache_read_input_tokens),
       cacheWriteTokens: num(usage.cache_creation_input_tokens),
       reasoningTokens: num(usage.output_tokens_details?.thinking_tokens),
+      // The content array carries the tools the model actually reached for.
+      tools: countTools((entry.message?.content ?? []) as unknown[], (part: any) =>
+        part?.type === "tool_use" ? String(part.name ?? "") : undefined),
       ok: entry.isApiErrorMessage ? 0 : 1,
     });
   }
@@ -75,6 +88,9 @@ export function parseCodex(lines: string[], path: string): TurnRecord[] {
   let model: string | undefined;
   let cwd: string | undefined;
   let previous = { input: 0, output: 0, cacheRead: 0, reasoning: 0 };
+  // Codex emits a tool call as its own line, so they are gathered until the
+  // next token count closes the turn they belong to.
+  let pendingTools: Record<string, number> = {};
   for (const line of lines) {
     let entry: any;
     try {
@@ -91,6 +107,13 @@ export function parseCodex(lines: string[], path: string): TurnRecord[] {
     }
     if (entry?.type === "turn_context") {
       model = payload?.model ? String(payload.model) : model;
+      continue;
+    }
+    const callName = ["function_call", "local_shell_call", "custom_tool_call"].includes(String(payload?.type))
+      ? String(payload?.name ?? payload?.type)
+      : undefined;
+    if (callName) {
+      pendingTools[callName] = (pendingTools[callName] ?? 0) + 1;
       continue;
     }
     if (payload?.type !== "token_count") continue;
@@ -119,8 +142,10 @@ export function parseCodex(lines: string[], path: string): TurnRecord[] {
       cacheReadTokens: rise(now.cacheRead, previous.cacheRead),
       cacheWriteTokens: 0,
       reasoningTokens: rise(now.reasoning, previous.reasoning),
+      tools: Object.keys(pendingTools).length ? pendingTools : undefined,
       ok: 1,
     });
+    pendingTools = {};
     previous = now;
   }
   return turns;
