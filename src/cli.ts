@@ -26,6 +26,7 @@ import { buildInsights, formatInsights } from "./insights";
 import { renderDashboard } from "./dashboard";
 import { acpHarnesses, runOverAcp, speaksAcp } from "./acp";
 import { explainJob, formatExplanation } from "./why";
+import { buildAttribution, formatAttribution } from "./pr-attribution";
 import { readActivity } from "../hooks/subagent-activity";
 import {
   exhaustedProviders,
@@ -115,6 +116,7 @@ usage:
   mafia dash [--watch]       one screen for the whole fleet
   mafia why JOB              why this job got the model and host it ran on
   mafia ask --prompt TEXT [--harness omp|cline] [--model M]   one turn over ACP
+  mafia landed [--json]      which models produce work that actually merges
   mafia insights [--json]    what the telemetry says to change next
   mafia bench [--models a,b] [--runs N] [--json]   measure real TTFT; spends quota
   mafia cleanse [--repo PATH] [--host NAME] [--agents N] [--all] [--tests] [REQUEST]
@@ -139,7 +141,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     "help", "-h", "--help", "jobs", "status", "watch", "dispatch", "logs", "cancel", "handoff", "compare",
     "team", "hub", "message", "decisions", "decision", "events", "route", "budget", "protocol",
     "sync", "hosts", "install-remote", "eval", "__team-run", "doctor", "models", "scale", "update", "install-updater",
-    "vps", "__vps-refresh", "prs", "__prs-refresh", "mirror", "gc", "quota", "roles", "bench", "cleanse", "subagents", "history", "insights", "dash", "why", "ask",
+    "vps", "__vps-refresh", "prs", "__prs-refresh", "mirror", "gc", "quota", "roles", "bench", "cleanse", "subagents", "history", "insights", "dash", "why", "ask", "landed",
   ]);
   if (!command || command === "shell" || command === "run" || !controlCommands.has(command)) {
     const { spawnSync } = await import("node:child_process");
@@ -604,6 +606,11 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
       });
       has(args, "--json") ? printJson(result) : console.log(result.text);
       if (result.stopReason !== "end_turn") process.exitCode = 1;
+      return;
+    }
+    case "landed": {
+      const value = buildAttribution(mafia.config.stateRoot, Number(option(args, "--limit") ?? 500));
+      has(args, "--json") ? printJson(value) : console.log(formatAttribution(value));
       return;
     }
     case "install-updater":

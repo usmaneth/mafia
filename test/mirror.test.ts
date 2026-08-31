@@ -49,6 +49,14 @@ describe("ssh multiplexing", () => {
     expect(path.replace("ControlPath=", "").length).toBeLessThan(104);
   });
 
+  test("keeps the shared connection alive across the timer interval", () => {
+    // At five minutes the socket expired between five-minute ticks, so every
+    // scheduled run paid a fresh handshake.
+    const persist = withSshMultiplexing("ssh", [target, "true"])
+      .find((value) => value.startsWith("ControlPersist="));
+    expect(Number(persist!.split("=")[1])).toBeGreaterThan(300);
+  });
+
   test("bounds the connection attempt so a stalled master cannot hang forever", () => {
     // Without this a degraded link turned a two-second command into an
     // hour-long wait, because every client blocked on the shared socket.

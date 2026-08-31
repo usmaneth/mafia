@@ -18,7 +18,6 @@ export const mirrorExcludes = [
   "node_modules",
   ".DS_Store",
   "*.log",
-  "bun.lock",
   ".env",
   ".env.*",
 ];
@@ -52,6 +51,10 @@ class Deadline {
   allow(timeout: number): number {
     return Math.max(1, Math.min(timeout, this.remaining()));
   }
+}
+
+function asRemoteUser(host: HostConfig, inner: string): string {
+  return host.defaultUser ? `sudo -iu ${JSON.stringify(host.defaultUser)} bash -lc ${JSON.stringify(inner)}` : inner;
 }
 
 function shell(
@@ -292,9 +295,15 @@ export function mirrorHost(host: HostConfig, options: MirrorOptions = {}): Mirro
   );
   const localDirty = new Set(localDirtyPaths());
   const deleted = untouchedSinceLastPass ? [] : remoteOnlyFiles(host, remoteRoot, deadline);
+  // A file the VPS reports as untracked is only remote work if the local tree
+  // does not have it. The mirror excludes `.git`, so the remote HEAD never
+  // advances and every file added by a merge since its last pull shows up as
+  // untracked there — files the mirror itself put on the host.
   const remoteOnlyEdits = untouchedSinceLastPass
     ? []
-    : remoteDirtyPaths(host, remoteRoot, deadline).filter((path) => !localDirty.has(path));
+    : remoteDirtyPaths(host, remoteRoot, deadline)
+      .filter((path) => !localDirty.has(path))
+      .filter((path) => !existsSync(join(repoRoot, path)));
   const blocking = [...new Set([...deleted, ...remoteOnlyEdits])];
 
   if (blocking.length && !options.force) {
@@ -367,6 +376,27 @@ export function mirrorHost(host: HostConfig, options: MirrorOptions = {}): Mirro
   const owner = host.defaultUser;
   if (owner) {
     shell("ssh", [host.target!, `chown -R ${JSON.stringify(owner)} ${JSON.stringify(remoteRoot)}`], 120_000, deadline);
+  }
+  // Install when the dependency set changed. Excluding the lockfile kept the
+  // copy small but meant a new dependency never reached the host: the tree
+  // mirrored cleanly and then every command that imported it failed there.
+  const manifestChanged = sync.output
+    .split("\n")
+    .some((line) => /\b(package\.json|bun\.lock)$/.test(line.trim()));
+  if (manifestChanged) {
+    const install = shell("ssh", [host.target!, asRemoteUser(host,
+      `cd ${JSON.stringify(remoteRoot)} && bun install --frozen-lockfile`)], 300_000, deadline);
+    if (!install.ok) {
+      return {
+        ...base,
+        verdict: "error",
+        detail: `Copied the tree, but installing dependencies failed: ${install.output.slice(0, 120)}`,
+        localDigest: localHash,
+        remoteDigest: remoteHash,
+        changedFiles,
+        durationMs: Date.now() - startedAt,
+      };
+    }
   }
   // Keep the remote refs current without touching the checkout. A fetch is safe
   // because it never moves HEAD or overwrites a file.

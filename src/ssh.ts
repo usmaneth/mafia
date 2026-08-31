@@ -26,7 +26,10 @@ export function sshControlOptions(target: string, hasOwnTimeout = false): string
   return [
     "-o", "ControlMaster=auto",
     "-o", `ControlPath=${controlPath(target)}`,
-    "-o", "ControlPersist=300",
+    // Longer than the update timer's five-minute interval, so the shared
+    // connection is still alive when the next tick reuses it. At 300 seconds it
+    // expired between ticks and every scheduled run paid a fresh handshake.
+    "-o", "ControlPersist=900",
     "-o", "ServerAliveInterval=15",
     "-o", "ServerAliveCountMax=3",
     ...(hasOwnTimeout ? [] : ["-o", "ConnectTimeout=15"]),

@@ -366,6 +366,36 @@ export function formatFixes(results: FixResult[]): string {
     : `  manual  ${result.name.padEnd(16)} ${result.detail}`).join("\n");
 }
 
+import { mkdirSync, renameSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
+
+/**
+ * Report only what changed since the last run.
+ *
+ * A scheduled health check that repeats its findings every five minutes trains
+ * the reader to skip it, and the one time something new appears it reads like
+ * the same noise. Alerting on the transition keeps a quiet system quiet.
+ */
+export function changedChecks(checks: Check[], stateRoot: string): Check[] {
+  const path = join(stateRoot, "doctor-state.json");
+  let previous: Record<string, string> = {};
+  try {
+    previous = JSON.parse(readFileSync(path, "utf8")) as Record<string, string>;
+  } catch {}
+  const current: Record<string, string> = {};
+  for (const check of checks) current[check.name] = check.state;
+  const changed = checks.filter((check) => previous[check.name] !== check.state);
+  // A check that vanished, because a host went away, is not a change worth
+  // reporting; only states that exist now are recorded.
+  try {
+    mkdirSync(dirname(path), { recursive: true });
+    const temp = `${path}.${process.pid}.tmp`;
+    writeFileSync(temp, `${JSON.stringify(current, null, 2)}\n`, { mode: 0o600 });
+    renameSync(temp, path);
+  } catch {}
+  return changed;
+}
+
 export function formatDoctor(checks: Check[]): string {
   const mark: Record<CheckState, string> = { ok: "ok  ", warn: "warn", fail: "FAIL" };
   const lines = checks.map((check) => {

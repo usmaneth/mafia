@@ -1,6 +1,5 @@
 import { spawn } from "node:child_process";
 import { Readable, Writable } from "node:stream";
-import { ClientSideConnection, ndJsonStream } from "@zed-industries/agent-client-protocol";
 import { toolEnvironment } from "./process";
 
 export interface AcpRunOptions {
@@ -55,6 +54,10 @@ function textOf(content: unknown): string {
  * infer. Two of the six harnesses speak it today.
  */
 export async function runOverAcp(options: AcpRunOptions): Promise<AcpRunResult> {
+  // Imported here rather than at the top so a host without the package can
+  // still run every other command. A missing protocol client should disable
+  // one feature, not the tool.
+  const { ClientSideConnection, ndJsonStream } = await import("@zed-industries/agent-client-protocol");
   const child = spawn(options.command, options.args, {
     cwd: options.cwd,
     env: toolEnvironment(),
