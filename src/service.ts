@@ -10,6 +10,7 @@ import {
   appendRemoteMessage,
   cancelRemote,
   dispatchRemote,
+  dispatchRemoteAsync,
   discoverRemote,
   discoverRemoteEvents,
   compareRemoteBranches,
@@ -22,9 +23,19 @@ import { buildHandoffPacket } from "./packet";
 import { ControlPlane } from "./control";
 import { ModelCatalogService, resolveCatalogModel } from "./models";
 import { detectHarnessModel } from "./harness-model";
+import { healthyRoleModels, readConfiguredRoles } from "./roles";
+import {
+  isQuotaFailure,
+  penaliseProvider,
+  providerOfSelector,
+  ProviderUsageService,
+  substituteExhaustedModel,
+  unavailableProviders,
+} from "./provider-usage";
 import type {
   ArtifactRef,
   HarnessName,
+  HostConfig,
   JobSpec,
   JobState,
   JobStatus,
@@ -50,6 +61,9 @@ export interface DispatchInput {
   taskId?: string;
   contextPackPath?: string;
   budget?: TeamBudget;
+  prewalk?: boolean;
+  prewalkInto?: string;
+  session?: boolean;
 }
 
 export class MafiaService {
@@ -59,6 +73,12 @@ export class MafiaService {
   readonly models = new ModelCatalogService(this.config.stateRoot);
 
   dispatch(input: DispatchInput): JobStatus {
+    const { initial, spec, localJobDir } = this.prepare(input);
+    const host = resolveHost(this.config, input.host);
+    return this.launch(host, spec, initial, localJobDir);
+  }
+
+  private prepare(input: DispatchInput): { initial: JobStatus; spec: JobSpec; localJobDir: string } {
     let harness = input.harness;
     let model = input.model;
     let modelSource: JobSpec["modelSource"] = model ? "requested" : undefined;
@@ -76,6 +96,16 @@ export class MafiaService {
       }
     }
     harness ??= this.config.defaultHarness;
+    // Re-check quota at dispatch, not only when a team was planned. Planning can
+    // happen an hour before the work runs, and an explicit --model never went
+    // through the router at all, so this is the only point that sees every job.
+    const swap = isHarnessName(harness) ? this.avoidExhaustedProvider(model, harness) : undefined;
+    if (swap) {
+      model = swap.model;
+      harness = swap.harness;
+      modelSource = "quota-substituted";
+    }
+    // Assert last, so the narrowing covers every use below the substitution.
     if (!isHarnessName(harness)) throw new Error(`Unknown harness: ${harness}`);
     const host = resolveHost(this.config, input.host);
     const configuredModel = this.config.harnessModels?.[harness];
@@ -112,6 +142,10 @@ export class MafiaService {
       taskId: input.taskId,
       contextPackPath: input.contextPackPath,
       budget: input.budget,
+      roleModels: harness === "omp" ? this.healthyRoles() : undefined,
+      prewalk: input.prewalk,
+      prewalkInto: input.prewalkInto,
+      session: input.session ?? this.config.ompSessions,
     };
     const localJobDir = join(this.config.stateRoot, "jobs", id);
     mkdirSync(localJobDir, { recursive: true });
@@ -132,64 +166,121 @@ export class MafiaService {
       data: { harness: spec.harness, model: spec.model, title: spec.title, taskId: spec.taskId },
     });
 
-    let pid: number;
-    if (host.kind === "local") {
-      pid = spawnDetached(
+    return { initial, spec, localJobDir };
+  }
+
+  private launch(host: HostConfig, spec: JobSpec, initial: JobStatus, localJobDir: string): JobStatus {
+    const pid = host.kind === "local"
+      ? spawnDetached(
         "node",
         [join(repoRoot, "worker", "worker.mjs"), join(localJobDir, "spec.json")],
         undefined,
         codexOAuthEnvironment(),
-      );
-    } else {
-      pid = dispatchRemote(host, spec);
-    }
+      )
+      : dispatchRemote(host, spec);
+    return this.recordStarted(initial, pid);
+  }
+
+  /**
+   * Dispatch several jobs, overlapping the remote launches.
+   *
+   * Planning each job is local and quick; the launch is a round trip. Starting
+   * a wave of sixty-four tasks one at a time spent most of its time waiting, so
+   * the launches run together with a bound that keeps the host comfortable.
+   */
+  async dispatchMany(inputs: DispatchInput[], concurrency = 8): Promise<JobStatus[]> {
+    const results: JobStatus[] = new Array(inputs.length);
+    let next = 0;
+    const worker = async () => {
+      while (true) {
+        const index = next++;
+        if (index >= inputs.length) return;
+        const input = inputs[index]!;
+        const host = resolveHost(this.config, input.host);
+        if (host.kind === "local") {
+          results[index] = this.dispatch(input);
+          continue;
+        }
+        const { initial, spec } = this.prepare(input);
+        results[index] = this.recordStarted(initial, await dispatchRemoteAsync(host, spec));
+      }
+    };
+    await Promise.all(Array.from({ length: Math.max(1, Math.min(concurrency, inputs.length)) }, worker));
+    return results;
+  }
+
+  private recordStarted(initial: JobStatus, pid: number): JobStatus {
     const started = { ...initial, state: "starting" as const, pid, updatedAt: new Date().toISOString() };
     this.store.upsert(started);
     return started;
   }
 
   reconcile(id?: string, discover = false): JobStatus[] {
-    for (const message of this.store.listUndeliveredMessages()) this.deliverMessage(message);
+    const undelivered = this.store.listUndeliveredMessages();
+    if (undelivered.length) {
+      const known = this.store.list(500);
+      for (const message of undelivered) this.deliverMessage(message, known);
+    }
     const jobs = id ? [this.store.get(id)].filter(Boolean) as JobStatus[] : this.store.list(500);
     const result: JobStatus[] = [];
     const remoteByHost = new Map<string, Map<string, JobStatus>>();
+    const pendingMessages: MafiaMessage[] = [];
+    const failures: JobStatus[] = [];
     if (!id) {
       for (const host of Object.values(this.config.hosts)) {
         if (host.kind !== "ssh") continue;
-        const statuses = discoverRemote(host);
+        // A discovery pass must see every job, not only the ones written since
+        // the last read, or it cannot find jobs the local store never knew.
+        const statuses = discoverRemote(host, { full: discover });
         remoteByHost.set(host.name, new Map(statuses.map((status) => [status.id, status])));
         const remote = discoverRemoteEvents(host);
-        for (const event of remote.events) this.store.insertEvent(event);
-        for (const message of remote.messages) {
-          if (this.store.insertMessage(message)) this.deliverMessage(message);
-        }
+        this.store.transaction(() => {
+          for (const event of remote.events) this.store.insertEvent(event);
+          for (const message of remote.messages) {
+            if (this.store.insertMessage(message)) pendingMessages.push(message);
+          }
+        });
       }
     }
-    for (const job of jobs) {
-      const host = resolveHost(this.config, job.host);
-      const current = host.kind === "local"
-        ? this.store.importLocalStatus(job.id)
-        : id
-          ? readRemoteStatus(host, job.id)
-          : remoteByHost.get(host.name)?.get(job.id);
-      if (current) {
-        const checked = this.markStale(current);
-        this.store.upsert(checked);
-        this.store.upsertUsage(checked);
-        result.push(checked);
-      } else {
-        const checked = this.markStale(job);
-        this.store.upsert(checked);
-        result.push(checked);
-      }
-    }
-    if (discover) {
-      for (const statuses of remoteByHost.values()) {
-        for (const remoteJob of statuses.values()) {
-          this.store.upsert(remoteJob);
-          if (!result.some((job) => job.id === remoteJob.id)) result.push(remoteJob);
+    this.store.transaction(() => {
+      for (const job of jobs) {
+        const host = resolveHost(this.config, job.host);
+        const current = host.kind === "local"
+          ? this.store.importLocalStatus(job.id)
+          : id
+            ? readRemoteStatus(host, job.id)
+            : remoteByHost.get(host.name)?.get(job.id);
+        if (current) {
+          const checked = this.markStale(current);
+          const wasFailed = job.state === "failed";
+          this.store.upsert(checked);
+          this.store.upsertUsage(checked);
+          if (!wasFailed) failures.push(checked);
+          result.push(checked);
+        } else {
+          const checked = this.markStale(job);
+          this.store.upsert(checked);
+          result.push(checked);
         }
       }
+      if (discover) {
+        const seen = new Set(result.map((job) => job.id));
+        for (const statuses of remoteByHost.values()) {
+          for (const remoteJob of statuses.values()) {
+            this.store.upsert(remoteJob);
+            if (!seen.has(remoteJob.id)) {
+              seen.add(remoteJob.id);
+              result.push(remoteJob);
+            }
+          }
+        }
+      }
+    });
+    // Both of these touch the control plane, so they run outside the transaction.
+    for (const job of failures) this.noteProviderFailure(job);
+    // Delivery opens SSH connections, so it must run outside the transaction.
+    if (pendingMessages.length) {
+      for (const message of pendingMessages) this.deliverMessage(message, result);
     }
     return result;
   }
@@ -318,6 +409,89 @@ export class MafiaService {
     return `${stat}\n${names}`.trim();
   }
 
+  /**
+   * Move a job off a provider that has no quota left.
+   *
+   * Returns another route to the same model, never a smaller one. Dropping a
+   * caller to a weaker model without asking changes the result they get; taking
+   * the identical model through a different account does not.
+   */
+  private avoidExhaustedProvider(
+    model: string | undefined,
+    harness: HarnessName,
+  ): { model: string; harness: HarnessName } | undefined {
+    if (!model) return undefined;
+    const catalog = this.models.cached();
+    if (!catalog) return undefined;
+    const usage = new ProviderUsageService(this.config.stateRoot).discover();
+    const requested = catalog.models.find((entry) =>
+      entry.selector === model || `${entry.selector}:` === model.slice(0, entry.selector.length + 1));
+    if (!requested) return undefined;
+    const blocked = unavailableProviders(usage, this.config.stateRoot);
+    if (!blocked.has(requested.provider)) return undefined;
+    const found = substituteExhaustedModel(catalog.models, requested, usage, 0, blocked);
+    if (!found || !isHarnessName(found.model.harness)) return undefined;
+    // Carry any effort suffix across to the replacement.
+    const suffix = model.slice(requested.selector.length);
+    this.control.event({
+      host: "local",
+      actor: "lead",
+      type: "route.quota-substituted",
+      data: { ...found.substitution },
+    });
+    return { model: `${found.model.selector}${suffix}`, harness: found.model.harness };
+  }
+
+  /**
+   * Bench the provider behind a job that failed for a quota or auth reason.
+   *
+   * Polled quota cannot see a window emptying between reads, and it never sees
+   * an account losing authorisation. The failure itself is the signal.
+   */
+  private noteProviderFailure(job: JobStatus): void {
+    if (job.state !== "failed" || !isQuotaFailure(job.error)) return;
+    const provider = providerOfSelector(job.model);
+    if (!provider) return;
+    penaliseProvider(this.config.stateRoot, provider, job.error ?? "provider refused the request");
+    this.control.event({
+      jobId: job.id,
+      host: job.host,
+      actor: "lead",
+      type: "route.provider-benched",
+      data: { provider, error: (job.error ?? "").slice(0, 200) },
+    });
+  }
+
+  /**
+   * OMP role overrides for this dispatch, or nothing when the profile is fine.
+   *
+   * Cached for the life of the service so a team of sixty-four tasks reads the
+   * profile once rather than once per task.
+   */
+  private roleCache?: { overrides: ReturnType<typeof healthyRoleModels>["overrides"] };
+
+  private healthyRoles() {
+    if (!this.roleCache) {
+      const usage = new ProviderUsageService(this.config.stateRoot).discover();
+      const result = healthyRoleModels(
+        readConfiguredRoles(),
+        this.models.cached(),
+        usage,
+        this.config.stateRoot,
+      );
+      for (const change of result.changes) {
+        this.control.event({
+          host: "local",
+          actor: "lead",
+          type: "route.role-repinned",
+          data: { ...change },
+        });
+      }
+      this.roleCache = { overrides: result.overrides };
+    }
+    return Object.keys(this.roleCache.overrides).length ? this.roleCache.overrides : undefined;
+  }
+
   private markStale(job: JobStatus): JobStatus {
     if (job.result && ["succeeded", "failed"].includes(job.state)) {
       job = { ...job, result: extractHarnessResult(job.result) };
@@ -335,8 +509,14 @@ export class MafiaService {
     };
   }
 
-  private deliverMessage(message: MafiaMessage): void {
-    const jobs = this.store.list(500);
+  /**
+   * Deliver a message to every job that should receive it.
+   *
+   * `jobs` is passed in when several messages are delivered together. Without
+   * it each message re-reads and re-parses the whole job table.
+   */
+  private deliverMessage(message: MafiaMessage, known?: JobStatus[]): void {
+    const jobs = known ?? this.store.list(500);
     const recipients = message.to?.startsWith("job-")
       ? jobs.filter((job) => job.id === message.to)
       : message.teamId

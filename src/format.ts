@@ -1,6 +1,6 @@
 import { budgetState } from "./budget";
 import { agentDisplayName, isActiveAgent } from "./agent-display";
-import type { JobStatus, MafiaMessage, PrOperationalState, PrTelemetry, TeamStatus, VpsTelemetry } from "./types";
+import type { JobStatus, MafiaMessage, ModelCatalog, ModelRecord, PrOperationalState, PrTelemetry, TeamStatus, VpsTelemetry } from "./types";
 
 function age(value: string): string {
   const seconds = Math.max(0, Math.floor((Date.now() - new Date(value).getTime()) / 1000));
@@ -285,8 +285,14 @@ export function formatVpsWidget(value: VpsTelemetry): string[] {
   const memory = value.memory ? percent(value.memory.usedBytes, value.memory.totalBytes) : "-";
   const disk = value.disk ? `${value.disk.percent}%` : "-";
   const load = value.load?.[0].toFixed(2) ?? "-";
-  const stale = Date.now() - new Date(value.generatedAt).getTime() >= 60_000 ? " | stale" : "";
-  return [`VPS ${value.host} online ${value.latencyMs}ms | load ${load} | mem ${memory} | disk ${disk}${stale}`];
+  const agents = value.jobs?.running ?? 0;
+  const stale = Date.now() - new Date(value.generatedAt).getTime() >= 60_000;
+  const full = `VPS ${value.host} online ${value.latencyMs}ms | load ${load} | mem ${memory} | disk ${disk} | ${agents} agents`;
+  const short = `VPS online ${value.latencyMs}ms | load ${load} | mem ${memory} | disk ${disk} | ${agents} agents`;
+  const line = full.length <= 80 ? full : short;
+  const withStale = stale ? `${line} | stale` : line;
+  if (withStale.length <= 80) return [withStale];
+  return [line];
 }
 
 export function formatPrWidget(value: PrTelemetry): string {
@@ -540,5 +546,73 @@ export function formatVpsTelemetry(value: VpsTelemetry, options: { compact?: boo
       lines.push(`${String(process.pid).padStart(7)} ${process.user.padEnd(8)} ${process.cpuPercent.toFixed(1).padStart(5)}% ${process.memoryPercent.toFixed(1).padStart(4)}% ${process.command.slice(0, options.compact ? 68 : 140)}`);
     }
   }
+  return lines.join("\n");
+}
+
+function contextSize(tokens?: number): string {
+  if (!tokens) return "-";
+  if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(tokens >= 10_000_000 ? 0 : 1)}M`;
+  return `${Math.round(tokens / 1000)}K`;
+}
+
+function price(cost?: ModelRecord["cost"]): string {
+  if (!cost) return "-";
+  if (!cost.input && !cost.output) return "free";
+  // Keep both halves at the same precision. Mixing "3.00" with "15" makes the
+  // column read as two different units.
+  const round = (value: number) => (value >= 100 ? value.toFixed(0) : value.toFixed(2));
+  return `${round(cost.input)}/${round(cost.output)}`;
+}
+
+/** Shorten the effort levels so a full ladder fits on one line. */
+function efforts(model: ModelRecord): string {
+  if (!model.efforts?.length) return model.reasoning ? "yes" : "-";
+  const short: Record<string, string> = { minimal: "min", medium: "med" };
+  return model.efforts.map((level) => short[level] ?? level).join(" ");
+}
+
+/**
+ * Render the model catalog as a grouped, aligned table.
+ *
+ * The previous form printed four tab-separated fields per line. Tabs do not
+ * align across rows of differing width, so the selector column, which is the
+ * one a reader copies, landed in a different place on every line.
+ */
+export function formatModels(catalog: ModelCatalog, shown: ModelRecord[]): string {
+  const summary = [
+    `${catalog.models.length} models`,
+    `refreshed ${age(catalog.generatedAt)} ago`,
+  ].join("  ");
+  const sources = catalog.sources
+    .map((source) => `${source.harness} ${source.count}${source.status === "ok" ? "" : "!"}`)
+    .join("  ");
+  const failed = catalog.sources.filter((source) => source.status !== "ok");
+  const lines = [summary, sources];
+  for (const source of failed) {
+    lines.push(`  ! ${source.harness}: ${source.error ?? "unavailable"} (showing the last good list)`);
+  }
+  if (!shown.length) {
+    lines.push("", "no matching models");
+    return lines.join("\n");
+  }
+
+  // Size to the longest selector shown. The selector is the field a reader
+  // copies, so it must never be truncated; the name column absorbs the width
+  // instead because a clipped label still reads.
+  const width = Math.max(24, ...shown.map((model) => model.selector.length)) + 1;
+  lines.push("", `  ${fit("MODEL", 26)} ${fit("SELECTOR", width)} ${fit("CONTEXT", 8)} ${fit("$/Mtok", 12)} EFFORT`);
+  let group = "";
+  for (const model of shown) {
+    const heading = `${model.provider} via ${model.harness}`;
+    if (heading !== group) {
+      group = heading;
+      lines.push(heading);
+    }
+    lines.push(
+      `  ${fit(model.name, 26)} ${fit(model.selector, width)} ` +
+      `${fit(contextSize(model.contextWindow), 8)} ${fit(price(model.cost), 12)} ${efforts(model)}`,
+    );
+  }
+  lines.push("", "append an effort to a selector to set reasoning depth, e.g. anthropic/claude-opus-5:high");
   return lines.join("\n");
 }

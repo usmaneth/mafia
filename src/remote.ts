@@ -2,49 +2,165 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import type { HostConfig, JobSpec, JobStatus, MafiaEvent, MafiaMessage } from "./types";
-import { repoRoot } from "./config";
-import { run, shellQuote } from "./process";
+import { loadConfig, repoRoot } from "./config";
+import { run, shellQuote, toolEnvironment } from "./process";
+import { withSshMultiplexing } from "./ssh";
 
-export function installRemote(host: HostConfig): void {
+const installedWorkers = new Map<string, string>();
+
+/**
+ * How long a recorded worker install is trusted without re-checking.
+ *
+ * The digest alone would be enough if nothing else could touch the remote file.
+ * A bounded window means an out-of-band deletion repairs itself on the next
+ * dispatch rather than waiting for someone to notice.
+ */
+const INSTALL_TRUST_MS = 30 * 60_000;
+
+function installMarkerPath(host: HostConfig): string {
+  return join(loadConfig().stateRoot, "cursors", `${host.name}-worker.json`);
+}
+
+function readInstallMarker(host: HostConfig): string | undefined {
+  try {
+    const value = JSON.parse(readFileSync(installMarkerPath(host), "utf8")) as { digest?: string; at?: number };
+    if (!value.digest || !value.at) return undefined;
+    return Date.now() - value.at < INSTALL_TRUST_MS ? value.digest : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function writeInstallMarker(host: HostConfig, digest: string): void {
+  const path = installMarkerPath(host);
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, `${JSON.stringify({ digest, at: Date.now() })}\n`, { mode: 0o600 });
+}
+
+function localWorkerDigest(): string {
+  try {
+    return createHash("sha256").update(readFileSync(join(repoRoot, "worker", "worker.mjs"))).digest("hex");
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * Copy the worker to the host, at most once per worker version per process.
+ *
+ * `dispatchRemote` calls this for every job. A team of sixty-four tasks paid
+ * for sixty-four identical copies, each of which cost three SSH round trips.
+ * The digest check makes every call after the first free.
+ */
+export function installRemote(host: HostConfig, options: { force?: boolean } = {}): void {
   if (host.kind !== "ssh" || !host.target || !host.workerPath) return;
+  const digest = localWorkerDigest();
+  if (!options.force && digest && installedWorkers.get(host.name) === digest) return;
+  // Each CLI invocation is a fresh process, so an in-memory record only helps a
+  // team run. Copying the worker costs three round trips, which every single
+  // dispatch was paying.
+  if (!options.force && digest && readInstallMarker(host) === digest) {
+    installedWorkers.set(host.name, digest);
+    return;
+  }
   run("ssh", [host.target, `mkdir -p ${shellQuote(dirname(host.workerPath))} ${shellQuote(host.stateRoot)}`]);
   run("scp", [join(repoRoot, "worker", "worker.mjs"), `${host.target}:${host.workerPath}`]);
   const ownership = host.defaultUser
     ? ` && chown -R ${shellQuote(host.defaultUser)} ${shellQuote(host.stateRoot)}`
     : "";
   run("ssh", [host.target, `chmod 755 ${shellQuote(host.workerPath)}${ownership}`]);
+  if (digest) {
+    installedWorkers.set(host.name, digest);
+    writeInstallMarker(host, digest);
+  }
 }
 
-export function dispatchRemote(host: HostConfig, spec: JobSpec): number {
+/**
+ * Start a job on a remote host in one round trip.
+ *
+ * The previous form made five: a directory, an scp for the spec, another scp
+ * for the context pack, a chown, and the launch. Each costs about 70 ms on a
+ * shared connection, and scp costs 288 ms because it negotiates its own
+ * protocol even when the SSH channel is already open. Sending the files as one
+ * base64 tar on stdin removes both problems, and a team dispatching sixty-four
+ * tasks pays the difference sixty-four times.
+ */
+function planRemoteDispatch(host: HostConfig, spec: JobSpec): { target: string; script: string; payload: string } {
   if (host.kind !== "ssh" || !host.target || !host.workerPath) {
     throw new Error(`Host ${host.name} is not a complete SSH host.`);
   }
   installRemote(host);
   const remoteDir = join(host.stateRoot, "jobs", spec.id);
   const remoteSpec = join(remoteDir, "spec.json");
-  run("ssh", [host.target, `mkdir -p ${shellQuote(remoteDir)}`]);
   const remoteValue = { ...spec };
   const snapshot = spec.repo && existsSync(spec.repo)
     ? prepareRemoteWorkspace(host, spec)
     : undefined;
   if (snapshot) Object.assign(remoteValue, snapshot);
-  if (spec.contextPackPath && existsSync(spec.contextPackPath)) {
-    const remoteContext = join(remoteDir, "context.md");
-    run("scp", [spec.contextPackPath, `${host.target}:${remoteContext}`]);
-    remoteValue.contextPackPath = remoteContext;
+  const carriesContext = Boolean(spec.contextPackPath && existsSync(spec.contextPackPath));
+  if (carriesContext) remoteValue.contextPackPath = join(remoteDir, "context.md");
+
+  // Stage both files in one temporary directory and ship them as a single
+  // archive, so the payload stays one stdin stream whatever it contains.
+  const stage = mkdtempSync(join(tmpdir(), `${spec.id}-out-`));
+  let payload: string;
+  try {
+    writeFileSync(join(stage, "spec.json"), `${JSON.stringify(remoteValue, null, 2)}\n`, { mode: 0o600 });
+    const members = ["spec.json"];
+    if (carriesContext) {
+      writeFileSync(join(stage, "context.md"), readFileSync(spec.contextPackPath!));
+      members.push("context.md");
+    }
+    const archive = spawnSync("tar", ["-cf", "-", ...members], { cwd: stage, encoding: "buffer", maxBuffer: 64 * 1024 * 1024 });
+    if (archive.status !== 0) throw new Error("Cannot package the job spec.");
+    payload = archive.stdout.toString("base64");
+  } finally {
+    rmSync(stage, { recursive: true, force: true });
   }
-  const localSpec = join(tmpdir(), `${spec.id}.json`);
-  writeFileSync(localSpec, `${JSON.stringify(remoteValue, null, 2)}\n`, { mode: 0o600 });
-  run("scp", [localSpec, `${host.target}:${remoteSpec}`]);
+
   const user = host.harnessUsers?.[spec.harness] ?? host.defaultUser;
-  if (user) run("ssh", [host.target, `chown -R ${shellQuote(user)} ${shellQuote(remoteDir)}`]);
-  const inner = [
+  const launch = [
     `nohup env -u OPENAI_API_KEY -u CODEX_API_KEY node ${shellQuote(host.workerPath)} ${shellQuote(remoteSpec)}`,
     `> ${shellQuote(join(remoteDir, "launcher.log"))} 2>&1 < /dev/null & echo $!`,
   ].join(" ");
-  const command = user ? `sudo -iu ${shellQuote(user)} bash -lc ${shellQuote(inner)}` : inner;
-  return Number(run("ssh", [host.target, command]));
+  const script = [
+    `mkdir -p ${shellQuote(remoteDir)}`,
+    `base64 -d | tar -xf - -C ${shellQuote(remoteDir)}`,
+    user ? `chown -R ${shellQuote(user)} ${shellQuote(remoteDir)}` : "true",
+    user ? `sudo -iu ${shellQuote(user)} bash -lc ${shellQuote(launch)}` : launch,
+  ].join(" && ");
+  return { target: host.target, script, payload };
+}
+
+export function dispatchRemote(host: HostConfig, spec: JobSpec): number {
+  const plan = planRemoteDispatch(host, spec);
+  return Number(run("ssh", [plan.target, plan.script], { input: plan.payload }));
+}
+
+/**
+ * The same dispatch, with the remote launch awaited instead of blocked on.
+ *
+ * `spawnSync` holds the event loop, so a scheduler starting a wave of tasks
+ * could only ever launch them one after another. Everything before the launch
+ * is local and fast; only this last step is worth overlapping.
+ */
+export async function dispatchRemoteAsync(host: HostConfig, spec: JobSpec): Promise<number> {
+  const plan = planRemoteDispatch(host, spec);
+  const child = Bun.spawn(["ssh", ...withSshMultiplexing("ssh", [plan.target, plan.script])], {
+    stdin: new TextEncoder().encode(plan.payload),
+    stdout: "pipe",
+    stderr: "pipe",
+    env: toolEnvironment(),
+  });
+  const [out, err, code] = await Promise.all([
+    new Response(child.stdout).text(),
+    new Response(child.stderr).text(),
+    child.exited,
+  ]);
+  if (code !== 0) throw new Error((err || out || "ssh failed").trim());
+  return Number(out.trim());
 }
 
 export function repoSlugFromOrigin(origin: string): string | undefined {
@@ -53,21 +169,34 @@ export function repoSlugFromOrigin(origin: string): string | undefined {
   return match ? `${match[1]}/${match[2]}` : undefined;
 }
 
+/**
+ * Build the workspace snapshot once per distinct repository state.
+ *
+ * The previous form keyed the snapshot by job id, so a team of sixty-four tasks
+ * on one repository created sixty-four byte-identical bundles. On
+ * ai-memoryless-client that is 2.7 GB transferred and 82 seconds of
+ * `git bundle create` to send the same commits over and over.
+ *
+ * The key is derived from the commit and the working-tree changes, which are
+ * all cheap to compute. The expensive bundle is built only when the remote
+ * cannot already reach the commit, and only when no earlier dispatch has
+ * already staged that exact state.
+ */
 function prepareRemoteWorkspace(host: HostConfig, spec: JobSpec): Partial<JobSpec> | undefined {
   if (!host.target || !spec.repo) return undefined;
   const root = run("git", ["-C", spec.repo, "rev-parse", "--show-toplevel"]);
   const origin = run("git", ["-C", root, "remote", "get-url", "origin"]);
   const slug = repoSlugFromOrigin(origin);
   if (!slug) throw new Error(`Cannot map the Git remote for ${root} to the VPS.`);
-  const remoteRepo = `/home/${host.defaultUser ?? "usman"}/mafia-workspaces/${slug}`;
-  const remoteSnapshot = join(host.stateRoot, "snapshots", spec.id);
-  const ref = `refs/mafia/snapshots/${spec.id}`;
-  const temp = mkdtempSync(join(tmpdir(), `${spec.id}-`));
+  const user = host.defaultUser;
+  const remoteRepo = `/home/${user ?? "usman"}/mafia-workspaces/${slug}`;
+  const head = run("git", ["-C", root, "rev-parse", "HEAD"]);
+
+  const temp = mkdtempSync(join(tmpdir(), `mafia-snap-`));
   const bundle = join(temp, "workspace.bundle");
   const patch = join(temp, "workspace.patch");
   const archive = join(temp, "untracked.tar");
   try {
-    run("git", ["-C", root, "bundle", "create", bundle, "HEAD"]);
     const diff = spawnSync("git", ["-C", root, "diff", "--binary", "HEAD"], {
       encoding: "buffer",
       maxBuffer: 64 * 1024 * 1024,
@@ -85,21 +214,49 @@ function prepareRemoteWorkspace(host: HostConfig, spec: JobSpec): Partial<JobSpe
       env: { ...process.env, COPYFILE_DISABLE: "1" },
     });
     if (tar.status !== 0) throw new Error((tar.stderr?.toString() || "Cannot archive untracked files.").trim());
-    const ownership = host.defaultUser
-      ? ` && chown -R ${shellQuote(host.defaultUser)} ${shellQuote(remoteSnapshot)} ${shellQuote(dirname(remoteRepo))}`
-      : "";
-    run("ssh", [
-      host.target,
-      `mkdir -p ${shellQuote(remoteSnapshot)} ${shellQuote(dirname(remoteRepo))}${ownership}`,
-    ]);
-    run("scp", [bundle, patch, archive, `${host.target}:${remoteSnapshot}/`]);
-    const user = host.defaultUser;
-    const inner = [
-      `if ! git -C ${shellQuote(remoteRepo)} rev-parse --git-dir >/dev/null 2>&1; then gh repo clone ${shellQuote(slug)} ${shellQuote(remoteRepo)}; fi`,
-      `git -C ${shellQuote(remoteRepo)} fetch origin --prune`,
-      `git -C ${shellQuote(remoteRepo)} fetch ${shellQuote(join(remoteSnapshot, "workspace.bundle"))} HEAD:${shellQuote(ref)}`,
-    ].join(" && ");
-    run("ssh", [host.target, user ? `sudo -iu ${shellQuote(user)} bash -lc ${shellQuote(inner)}` : inner]);
+
+    const key = createHash("sha256")
+      .update(head)
+      .update(createHash("sha256").update(diff.stdout).digest())
+      .update(createHash("sha256").update(readFileSync(archive)).digest())
+      .digest("hex")
+      .slice(0, 16);
+    const remoteSnapshot = join(host.stateRoot, "snapshots", key);
+    const ref = `refs/mafia/snapshots/${key}`;
+    const asUser = (inner: string) => (user ? `sudo -iu ${shellQuote(user)} bash -lc ${shellQuote(inner)}` : inner);
+
+    // One probe answers both questions: is this exact state already staged, and
+    // can the clone reach the commit without a bundle?
+    const probe = run("ssh", [host.target, [
+      `mkdir -p ${shellQuote(remoteSnapshot)} ${shellQuote(dirname(remoteRepo))} 2>/dev/null`,
+      user ? `chown -R ${shellQuote(user)} ${shellQuote(remoteSnapshot)} ${shellQuote(dirname(remoteRepo))} 2>/dev/null` : "true",
+      `if [ -f ${shellQuote(join(remoteSnapshot, ".done"))} ]; then printf 'STAGED\n'; else printf 'MISSING\n'; fi`,
+      `if git -C ${shellQuote(remoteRepo)} cat-file -e ${shellQuote(head)}^{commit} 2>/dev/null; then printf 'HASCOMMIT\n'; else printf 'NOCOMMIT\n'; fi`,
+    ].join("; ")]);
+    const staged = probe.includes("STAGED");
+    const hasCommit = probe.includes("HASCOMMIT");
+
+    if (!staged) {
+      const files = [patch, archive];
+      if (!hasCommit) {
+        // Only pay for history the remote does not already have.
+        run("git", ["-C", root, "bundle", "create", bundle, "HEAD"]);
+        files.unshift(bundle);
+      }
+      run("scp", [...files, `${host.target}:${remoteSnapshot}/`]);
+      const steps = [
+        `if ! git -C ${shellQuote(remoteRepo)} rev-parse --git-dir >/dev/null 2>&1; then gh repo clone ${shellQuote(slug)} ${shellQuote(remoteRepo)}; fi`,
+        `git -C ${shellQuote(remoteRepo)} fetch origin --prune`,
+        hasCommit
+          ? `git -C ${shellQuote(remoteRepo)} update-ref ${shellQuote(ref)} ${shellQuote(head)}`
+          : `git -C ${shellQuote(remoteRepo)} fetch ${shellQuote(join(remoteSnapshot, "workspace.bundle"))} HEAD:${shellQuote(ref)}`,
+        // The marker is written last, so an interrupted stage is retried rather
+        // than reused as if it were complete.
+        `touch ${shellQuote(join(remoteSnapshot, ".done"))}`,
+      ].join(" && ");
+      run("ssh", [host.target, asUser(steps)]);
+    }
+
     return {
       repo: remoteRepo,
       cwd: undefined,
@@ -136,21 +293,134 @@ export function appendRemoteControl(host: HostConfig, id: string, event: MafiaEv
   ]);
 }
 
+function jobCursorPath(host: HostConfig): string {
+  return join(loadConfig().stateRoot, "cursors", `${host.name}-jobs.json`);
+}
+
+function readJobCursor(host: HostConfig): number {
+  try {
+    return Number(JSON.parse(readFileSync(jobCursorPath(host), "utf8")).seconds) || 0;
+  } catch {
+    return 0;
+  }
+}
+
+function writeJobCursor(host: HostConfig, seconds: number): void {
+  const path = jobCursorPath(host);
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, `${JSON.stringify({ seconds })}\n`, { mode: 0o600 });
+}
+
+interface StreamCursor {
+  events: number;
+  messages: number;
+}
+
+function cursorPath(host: HostConfig): string {
+  return join(loadConfig().stateRoot, "cursors", `${host.name}.json`);
+}
+
+function readCursor(host: HostConfig): StreamCursor {
+  try {
+    const value = JSON.parse(readFileSync(cursorPath(host), "utf8")) as Partial<StreamCursor>;
+    return { events: Number(value.events) || 0, messages: Number(value.messages) || 0 };
+  } catch {
+    return { events: 0, messages: 0 };
+  }
+}
+
+function writeCursor(host: HostConfig, cursor: StreamCursor): void {
+  const path = cursorPath(host);
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, `${JSON.stringify(cursor)}\n`, { mode: 0o600 });
+}
+
+/**
+ * Read the audit and message streams from the byte offset of the last read.
+ *
+ * The previous form sent `tail -n 10000` on every call. The audit file grows
+ * without limit, so a single status refresh moved 2.27 MB and re-inserted more
+ * than twelve thousand rows that the database already held. A byte cursor sends
+ * only the lines written since the last call.
+ *
+ * The remote size is read first. A size below the cursor means the file was
+ * rotated or truncated, so the cursor resets to zero and the next read starts
+ * from the beginning of the new file.
+ */
+/**
+ * Read one stream slice as base64.
+ *
+ * The remote measures the file, clamps the cursor, and sends exactly the bytes
+ * between the cursor and that measured size. base64 keeps the payload free of
+ * newlines, so the transport cannot change the byte count that the caller uses
+ * to advance the cursor.
+ */
+function sliceCommand(path: string, from: number, sizeVar: string): string {
+  return [
+    `${sizeVar}=$(wc -c < ${shellQuote(path)} 2>/dev/null || echo 0)`,
+    `F=${from}`,
+    `[ "$${sizeVar}" -lt "$F" ] && F=0`,
+    `printf '%s %s %s\\n' OFFSET "$F" "$${sizeVar}"`,
+    `if [ "$${sizeVar}" -gt "$F" ]; then tail -c +$((F + 1)) ${shellQuote(path)} 2>/dev/null | head -c $(($${sizeVar} - F)) | base64 -w0; fi`,
+    `printf '\\n'`,
+  ].join("; ");
+}
+
+export function decodeSlice(block: string): { from: number; to: number; text: string } {
+  const [header = "", payload = ""] = block.split("\n", 2);
+  const match = header.match(/^OFFSET (\d+) (\d+)$/);
+  if (!match) return { from: 0, to: 0, text: "" };
+  return {
+    from: Number(match[1]),
+    to: Number(match[2]),
+    text: payload ? Buffer.from(payload, "base64").toString("utf8") : "",
+  };
+}
+
+/**
+ * Advance a cursor past whole lines only.
+ *
+ * A measured file size can land inside a line that the writer had not finished
+ * appending. Stopping at the last newline makes that line arrive whole on the
+ * next read instead of being split and dropped.
+ */
+export function wholeLines(from: number, text: string): { consumed: number; text: string } {
+  const end = text.lastIndexOf("\n");
+  if (end < 0) return { consumed: from, text: "" };
+  const complete = text.slice(0, end + 1);
+  return { consumed: from + Buffer.byteLength(complete, "utf8"), text: complete };
+}
+
+/**
+ * Read the audit and message streams from the byte offset of the last read.
+ *
+ * The previous form sent `tail -n 10000` on every call. The audit file grows
+ * without limit, so a single status refresh moved 2.27 MB and re-inserted more
+ * than twelve thousand rows that the database already held. A byte cursor sends
+ * only the lines written since the last call.
+ */
 export function discoverRemoteEvents(host: HostConfig): { events: MafiaEvent[]; messages: MafiaMessage[] } {
   if (host.kind !== "ssh" || !host.target) return { events: [], messages: [] };
   const audit = join(host.stateRoot, "events", "audit.jsonl");
   const messages = join(host.stateRoot, "events", "messages.jsonl");
+  const cursor = readCursor(host);
   const raw = run("ssh", [
     host.target,
-    `printf '%s\\n' __MAFIA_EVENTS__; tail -n 10000 ${shellQuote(audit)} 2>/dev/null || true; ` +
-      `printf '%s\\n' __MAFIA_MESSAGES__; tail -n 10000 ${shellQuote(messages)} 2>/dev/null || true`,
+    [
+      `{ ${sliceCommand(audit, cursor.events, "A")}; }`,
+      `printf '%s\\n' __MAFIA_SPLIT__`,
+      `{ ${sliceCommand(messages, cursor.messages, "M")}; }`,
+    ].join("; "),
   ]);
-  const [eventRaw = "", messageRaw = ""] = raw
-    .split("__MAFIA_MESSAGES__")
-    .map((part) => part.replace("__MAFIA_EVENTS__", "").trim());
+  const [eventBlock = "", messageBlock = ""] = raw.split("__MAFIA_SPLIT__\n");
+  const eventSlice = decodeSlice(eventBlock);
+  const messageSlice = decodeSlice(messageBlock);
+  const eventLines = wholeLines(eventSlice.from, eventSlice.text);
+  const messageLines = wholeLines(messageSlice.from, messageSlice.text);
+  writeCursor(host, { events: eventLines.consumed, messages: messageLines.consumed });
   return {
-    events: parseJsonLines<MafiaEvent>(eventRaw),
-    messages: parseJsonLines<MafiaMessage>(messageRaw),
+    events: parseJsonLines<MafiaEvent>(eventLines.text),
+    messages: parseJsonLines<MafiaMessage>(messageLines.text),
   };
 }
 
@@ -199,10 +469,32 @@ export function cancelRemote(host: HostConfig, id: string): void {
   run("ssh", [host.target, `kill -TERM ${status.pid}`]);
 }
 
-export function discoverRemote(host: HostConfig): JobStatus[] {
+/**
+ * Fetch remote job status, skipping files that have not been written since the
+ * last read.
+ *
+ * Concatenating every `status.json` moved 1.33 MB per poll on a host with a
+ * hundred finished jobs, none of which can change again. A finished job's file
+ * is never rewritten, so its modification time is a reliable filter.
+ *
+ * The cutoff comes from the remote's own clock, read before the search, so a
+ * write that lands mid-read is picked up next time instead of being skipped by
+ * clock skew between the two hosts.
+ */
+export function discoverRemote(host: HostConfig, options: { full?: boolean } = {}): JobStatus[] {
   if (host.kind !== "ssh" || !host.target) return [];
-  const command = `find ${shellQuote(join(host.stateRoot, "jobs"))} -mindepth 2 -maxdepth 2 -name status.json -type f -print0 2>/dev/null | xargs -0 -r cat`;
-  const raw = run("ssh", [host.target, command]);
+  const jobs = join(host.stateRoot, "jobs");
+  const cursor = options.full ? 0 : readJobCursor(host);
+  const find = cursor
+    ? `find ${shellQuote(jobs)} -mindepth 2 -maxdepth 2 -name status.json -type f -newermt @${cursor} -print0 2>/dev/null`
+    : `find ${shellQuote(jobs)} -mindepth 2 -maxdepth 2 -name status.json -type f -print0 2>/dev/null`;
+  const raw = run("ssh", [
+    host.target,
+    `printf 'CURSOR %s\n' "$(date +%s)"; ${find} | xargs -0 -r cat`,
+  ]);
+  const stamp = raw.match(/^CURSOR (\d+)/);
+  // Overlap by two seconds so a file written during this read is not missed.
+  if (stamp) writeJobCursor(host, Math.max(0, Number(stamp[1]) - 2));
   if (!raw) return [];
   const statuses: JobStatus[] = [];
   let depth = 0;

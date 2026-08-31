@@ -11,4 +11,18 @@ describe("Mafia OMP launch", () => {
     expect(args.at(-2)).toBe("--model");
     expect(args.at(-1)).toBe("openai-codex/gpt-5.4");
   });
+
+  test("uses the fast lead profile for an explicit local Ollama model", () => {
+    const args = buildOmpArgs([
+      "--model",
+      "ollama/qwen3.8-27b-obliterated:q3_k_m",
+    ]);
+
+    expect(args).toContain("--no-skills");
+    expect(args).toContain("--no-rules");
+    expect(args).toContain("--no-lsp");
+    expect(args[args.indexOf("--tools") + 1]).toBe("bash");
+    expect(args[args.indexOf("--system-prompt") + 1]).toContain("Mafia lead");
+    expect(args[args.indexOf("--thinking") + 1]).toBe("off");
+  });
 });

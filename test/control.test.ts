@@ -99,6 +99,8 @@ describe("routing and budget", () => {
       hosts: { local: { name: "local", kind: "local", stateRoot: tempRoot() } },
     } satisfies MafiaConfig;
     expect(routeTask(config, { capability: "implementation" }).harness).toBe("codex");
+    expect(routeTask(config, { capability: "implementation", downgrade: true }).model)
+      .toBe("ollama/qwen3.8-27b-obliterated:q3_k_m");
     expect(routeTask(config, { capability: "research", downgrade: true }).model).toContain("nemotron");
   });
 

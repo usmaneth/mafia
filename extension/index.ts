@@ -8,6 +8,7 @@ import { loadConfig, repoRoot } from "../src/config";
 import { MafiaService } from "../src/service";
 import { TeamService } from "../src/team";
 import { catalogCandidates, filterCatalog, ModelCatalogService } from "../src/models";
+import { usableMetrics } from "../src/bench";
 import { recommendParallelism } from "../src/scale";
 import { readVpsTelemetry, refreshVpsTelemetry } from "../src/telemetry";
 import { showVpsDashboard } from "./vps-dashboard";
@@ -233,7 +234,7 @@ MAFIA DESIGN CHECKPOINT POLICY:
         host: params.host,
         preferredModels: params.preferredModels,
         downgrade: params.cheap,
-      }, new Map(), catalogCandidates(new ModelCatalogService(config.stateRoot).discover(), Object.keys(config.hosts)));
+      }, new Map(), catalogCandidates(new ModelCatalogService(config.stateRoot).discover(), Object.keys(config.hosts), usableMetrics(config.stateRoot)));
       return { content: [{ type: "text", text: JSON.stringify(value, null, 2) }], details: value };
     },
   });
@@ -350,7 +351,7 @@ MAFIA DESIGN CHECKPOINT POLICY:
           mafia.config,
           { capability: params.capability ?? "general", host: params.host },
           mafia.store.routingHistory(),
-          catalogCandidates(mafia.models.cached() ?? mafia.models.discover(), Object.keys(mafia.config.hosts)),
+          catalogCandidates(mafia.models.cached() ?? mafia.models.discover(), Object.keys(mafia.config.hosts), usableMetrics(mafia.config.stateRoot)),
         );
         route = {
           harness: selected.harness,
@@ -612,8 +613,16 @@ MAFIA DESIGN CHECKPOINT POLICY:
   pi.on("session_start", async (_event, ctx) => {
     const mafia = new MafiaService();
     let collectorRunning = false;
-    let lastVps = "";
-    let lastAgents = "";
+    const refresh = () => {
+      try {
+        const telemetry = readVpsTelemetry(mafia.config.stateRoot);
+        const vps = telemetry ? formatVpsWidget(telemetry)[0] : "VPS checking";
+        ctx.ui.setStatus("mafia-vps", vps);
+        const agents = formatAgentWidget(mafia.listCached(500));
+        nativeAgents.sync(mafia.listCached(500));
+        ctx.ui.setStatus("mafia-agents", agents);
+      } catch {}
+    };
     const collectVps = () => {
       if (collectorRunning) return;
       collectorRunning = true;
@@ -621,32 +630,16 @@ MAFIA DESIGN CHECKPOINT POLICY:
         cwd: repoRoot,
         stdio: "ignore",
       });
-      child.once("exit", () => {
+      const done = () => {
         collectorRunning = false;
-      });
-      child.once("error", () => {
-        collectorRunning = false;
-      });
-    };
-    const refresh = () => {
-      try {
-        const telemetry = readVpsTelemetry(mafia.config.stateRoot);
-        const vps = telemetry ? formatVpsWidget(telemetry)[0] : "VPS checking";
-        if (vps !== lastVps) {
-          ctx.ui.setStatus("mafia-vps", vps);
-          lastVps = vps;
-        }
-        const agents = formatAgentWidget(mafia.listCached(500));
-        nativeAgents.sync(mafia.listCached(500));
-        if (agents !== lastAgents) {
-          ctx.ui.setStatus("mafia-agents", agents);
-          lastAgents = agents;
-        }
-      } catch {}
+        refresh();
+      };
+      child.once("exit", done);
+      child.once("error", done);
     };
     collectVps();
     refresh();
     ctx.setInterval(refresh, 2000);
-    ctx.setInterval(collectVps, 20_000);
+    ctx.setInterval(collectVps, 8_000);
   });
 }

@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 import { readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
+import { toolEnvironment } from "./process";
 import { classifyPr } from "./pr";
 import type { PrAutomationUnit, PrOperationalState, PrStatus, PrTelemetry } from "./types";
 
@@ -18,7 +19,7 @@ interface ShepherdState {
 }
 
 function command(name: string, args: string[], timeout = 20_000): string {
-  const result = spawnSync(name, args, { encoding: "utf8", timeout });
+  const result = spawnSync(name, args, { encoding: "utf8", env: toolEnvironment(), timeout });
   return result.status === 0 ? result.stdout.trim() : "";
 }
 

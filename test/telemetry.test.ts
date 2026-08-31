@@ -205,6 +205,7 @@ describe("VPS telemetry", () => {
     expect(Math.max(...first.map((line) => line.length))).toBeLessThanOrEqual(80);
     expect(first[0]).toContain("VPS vps-test online 42ms");
     expect(first[0]).toContain("load 1.00 | mem 50% | disk 70%");
+    expect(first[0]).toContain("3 agents");
     expect(first[0]).not.toContain("route");
     expect(first[0]).not.toContain("watch");
   });

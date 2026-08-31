@@ -48,6 +48,10 @@ export class JobStore {
         status_json TEXT NOT NULL
       );
       CREATE INDEX IF NOT EXISTS jobs_state ON jobs(state);
+      -- Every listing sorts by updated_at. Without this SQLite scans the table
+      -- and builds a temporary B-tree for the sort on each call.
+      CREATE INDEX IF NOT EXISTS jobs_updated ON jobs(updated_at DESC);
+      CREATE INDEX IF NOT EXISTS jobs_state_updated ON jobs(state, updated_at DESC);
       CREATE INDEX IF NOT EXISTS jobs_pipeline ON jobs(pipeline_id);
       CREATE INDEX IF NOT EXISTS jobs_parent ON jobs(parent_id);
       CREATE TABLE IF NOT EXISTS events (
@@ -62,6 +66,9 @@ export class JobStore {
       );
       CREATE INDEX IF NOT EXISTS events_team ON events(team_id, created_at);
       CREATE INDEX IF NOT EXISTS events_job ON events(job_id, created_at);
+      -- The unfiltered event listing was scanning every row; there are already
+      -- more than twelve thousand.
+      CREATE INDEX IF NOT EXISTS events_created ON events(created_at DESC);
       CREATE TABLE IF NOT EXISTS messages (
         id TEXT PRIMARY KEY,
         team_id TEXT,
@@ -80,6 +87,8 @@ export class JobStore {
       CREATE INDEX IF NOT EXISTS messages_team ON messages(team_id, created_at);
       CREATE INDEX IF NOT EXISTS messages_room ON messages(room, created_at);
       CREATE INDEX IF NOT EXISTS messages_recipient ON messages(recipient, created_at);
+      -- Read on every reconcile, so a scan here is paid constantly.
+      CREATE INDEX IF NOT EXISTS messages_undelivered ON messages(delivered_at, created_at);
       CREATE TABLE IF NOT EXISTS decisions (
         id TEXT PRIMARY KEY,
         team_id TEXT NOT NULL,
@@ -114,6 +123,17 @@ export class JobStore {
       );
       CREATE INDEX IF NOT EXISTS checkpoints_team ON checkpoints(team_id, created_at);
     `);
+  }
+
+  /**
+   * Run a batch of writes in one transaction.
+   *
+   * Each `upsert` outside a transaction is its own write-ahead-log commit. A
+   * reconcile pass writes every known job, so a hundred jobs cost a hundred
+   * commits. One transaction makes that a single commit.
+   */
+  transaction<T>(work: () => T): T {
+    return this.db.transaction(work)();
   }
 
   upsert(job: JobStatus): void {
@@ -276,6 +296,17 @@ export class JobStore {
 
   markMessageDelivered(id: string, deliveredAt: string): void {
     this.db.query("UPDATE messages SET delivered_at = ? WHERE id = ?").run(deliveredAt, id);
+  }
+
+  /**
+   * Drop events older than the retention window.
+   *
+   * The audit table only ever grew. Events are a debugging aid, not a ledger,
+   * and the same records remain in the append-only log on disk.
+   */
+  pruneEvents(olderThanDays = 30): number {
+    const cutoff = new Date(Date.now() - olderThanDays * 86_400_000).toISOString();
+    return this.db.query("DELETE FROM events WHERE created_at < ?").run(cutoff).changes;
   }
 
   insertDecision(decision: DecisionRecord): void {

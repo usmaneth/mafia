@@ -4,10 +4,12 @@ import { execFileSync } from "node:child_process";
 import { budgetState, zeroUsage } from "./budget";
 import { createId } from "./id";
 import { spawnDetached } from "./process";
-import { MafiaService } from "./service";
+import { MafiaService, type DispatchInput } from "./service";
 import { buildContextPack } from "./context";
 import { formatPacket } from "./packet";
 import { rankTaskRoutes, routeTask } from "./router";
+import { providerHeadroom, ProviderUsageService, unavailableProviders } from "./provider-usage";
+import { usableMetrics } from "./bench";
 import { catalogCandidates, ModelCatalogService, resolveCatalogModel } from "./models";
 import { recommendParallelism } from "./scale";
 import type {
@@ -167,15 +169,25 @@ export class TeamService {
       team.currentParallel = team.autoScale !== false ? scale.recommendedParallel : team.maxParallel;
       const slots = Math.max(0, team.currentParallel - running);
       let dispatched = 0;
+      const pending: Array<{ task: TeamTaskStatus; hostName: string; input: DispatchInput }> = [];
       if (ready.length && running === 0) {
         team.checkpointId = this.checkpoint(team.id, `wave-${new Date().toISOString()}`).id;
       }
       const needsRouting = ready.some((task) => task.model || !task.harness);
       const catalog = needsRouting ? this.models.cached() ?? this.models.discover() : undefined;
       const candidates = catalog
-        ? catalogCandidates(catalog, Object.keys(this.mafia.config.hosts))
+        ? catalogCandidates(catalog, Object.keys(this.mafia.config.hosts), usableMetrics(this.mafia.config.stateRoot))
         : [];
       const routingHistory = needsRouting ? this.mafia.store.routingHistory() : new Map();
+      // Read quota once per planning pass. A team plans many tasks, and asking
+      // the provider for every one of them would be both slow and pointless.
+      const quota = needsRouting
+        ? new ProviderUsageService(this.mafia.config.stateRoot).discover()
+        : undefined;
+      const spentProviders = needsRouting
+        ? unavailableProviders(quota, this.mafia.config.stateRoot)
+        : new Set<string>();
+      const headroom = (provider: string | undefined) => providerHeadroom(quota, provider);
       for (const task of ready) {
         if (dispatched >= slots) break;
         let route;
@@ -189,6 +201,8 @@ export class TeamService {
             capability: task.capability ?? "general",
             host: task.host,
             downgrade: budget.downgrade,
+            exhaustedProviders: spentProviders,
+            headroom,
           }, routingHistory, candidates).filter((candidate) =>
             candidate.harness !== task.harness || candidate.model !== task.model || candidate.host !== task.host
           );
@@ -203,12 +217,16 @@ export class TeamService {
               preferredModels: task.preferredModels,
               host: task.host,
               downgrade: budget.downgrade,
+              exhaustedProviders: spentProviders,
+              headroom,
             }, routingHistory, candidates);
           if (task.allowFallback !== false && task.fallbackRoutes === undefined) {
             task.fallbackRoutes = rankTaskRoutes(this.mafia.config, {
               capability: task.capability ?? "general",
               host: task.host,
               downgrade: budget.downgrade,
+              exhaustedProviders: spentProviders,
+              headroom,
             }, routingHistory, candidates)
               .slice(1)
               .slice(0, task.retries ?? 1)
@@ -240,8 +258,12 @@ export class TeamService {
           repoRules: this.repoRules(task.repo),
         });
         const prompt = this.workerPrompt(team, task, contextPackPath);
-        try {
-          const job = this.mafia.dispatch({
+        // Planning stays in order because it consumes the wave's slots and the
+        // per-host limits. Only the launches are collected to run together.
+        pending.push({
+          task,
+          hostName,
+          input: {
             title: task.title ?? `${team.name}: ${task.id}`,
             prompt,
             harness: task.harness,
@@ -257,24 +279,39 @@ export class TeamService {
             taskId: task.id,
             contextPackPath,
             budget: team.budget,
-          });
-          task.jobId = job.id;
-          task.state = "running";
-          task.attempts++;
-          hostCounts.set(hostName, (hostCounts.get(hostName) ?? 0) + 1);
-          dispatched++;
+          },
+        });
+        hostCounts.set(hostName, (hostCounts.get(hostName) ?? 0) + 1);
+        dispatched++;
+      }
+
+      if (pending.length) {
+        // Each launch is a round trip. Starting a wave one at a time spent most
+        // of the wave waiting on the network.
+        const started = await this.mafia.dispatchMany(
+          pending.map((entry) => entry.input),
+          Math.max(1, Math.min(8, pending.length)),
+        );
+        for (const [index, entry] of pending.entries()) {
+          const job = started[index];
+          if (!job) {
+            entry.task.state = "failed";
+            entry.task.error = "The worker did not start.";
+            hostCounts.set(entry.hostName, Math.max(0, (hostCounts.get(entry.hostName) ?? 1) - 1));
+            continue;
+          }
+          entry.task.jobId = job.id;
+          entry.task.state = "running";
+          entry.task.attempts++;
           this.mafia.control.send({
             teamId: team.id,
             room: `team:${team.id}`,
             from: "scheduler",
             type: "handoff",
-            body: `Started ${task.id} with ${job.harness}@${job.host}.`,
+            body: `Started ${entry.task.id} with ${job.harness}@${job.host}.`,
             jobId: job.id,
             host: job.host,
           });
-        } catch (error) {
-          task.state = "failed";
-          task.error = error instanceof Error ? error.message : String(error);
         }
       }
 
