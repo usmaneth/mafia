@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 import { readFileSync } from "node:fs";
-import { ensureConfig, loadConfig, resolveHost } from "./config";
+import { join } from "node:path";
+import { ensureConfig, loadConfig, repoRoot, resolveHost } from "./config";
 import { formatHub, formatJobs, formatMessages, formatModels, formatPrDashboard, formatTeam, formatTeams } from "./format";
 import { isHarnessName } from "./harnesses";
 import { buildOmpArgs } from "./launch";
@@ -16,12 +17,15 @@ import { formatMirror, mirrorAll, mirrorIsHealthy, readMirrorState, watchMirror 
 import { collectAll, formatGc } from "./gc";
 import { formatRoleChanges, formatRoleSuggestions, healthyRoleModels, readConfiguredRoles, suggestFasterRoles } from "./roles";
 import { formatMetrics, readMetrics, runBench, usableMetrics } from "./bench";
-import { formatDoctor, runDoctor } from "./doctor";
+import { applyFixes, formatDoctor, formatFixes, runDoctor } from "./doctor";
 import { formatSubagents } from "./format";
 import { formatIngest, ingestTelemetry } from "./telemetry-ingest";
 import { TelemetryStore } from "./telemetry-store";
 import { formatRemoteIngest, ingestRemoteTelemetry } from "./telemetry-remote";
 import { buildInsights, formatInsights } from "./insights";
+import { renderDashboard } from "./dashboard";
+import { acpHarnesses, runOverAcp, speaksAcp } from "./acp";
+import { explainJob, formatExplanation } from "./why";
 import { readActivity } from "../hooks/subagent-activity";
 import {
   exhaustedProviders,
@@ -108,6 +112,9 @@ usage:
   mafia roles [--json] [--suggest]
   mafia subagents [--json]   what each OMP subagent is running and doing
   mafia history [--ingest] [--remote] [--models] [--tools] [--prs] [--json]
+  mafia dash [--watch]       one screen for the whole fleet
+  mafia why JOB              why this job got the model and host it ran on
+  mafia ask --prompt TEXT [--harness omp|cline] [--model M]   one turn over ACP
   mafia insights [--json]    what the telemetry says to change next
   mafia bench [--models a,b] [--runs N] [--json]   measure real TTFT; spends quota
   mafia cleanse [--repo PATH] [--host NAME] [--agents N] [--all] [--tests] [REQUEST]
@@ -120,7 +127,7 @@ usage:
   mafia hosts
   mafia install-remote HOST
   mafia eval [--live]
-  mafia doctor [--json]
+  mafia doctor [--json] [--fix]
 
 Mafia supports 128 tasks in one team. OMP remains the main interface.`);
 }
@@ -132,7 +139,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     "help", "-h", "--help", "jobs", "status", "watch", "dispatch", "logs", "cancel", "handoff", "compare",
     "team", "hub", "message", "decisions", "decision", "events", "route", "budget", "protocol",
     "sync", "hosts", "install-remote", "eval", "__team-run", "doctor", "models", "scale", "update", "install-updater",
-    "vps", "__vps-refresh", "prs", "__prs-refresh", "mirror", "gc", "quota", "roles", "bench", "cleanse", "subagents", "history", "insights",
+    "vps", "__vps-refresh", "prs", "__prs-refresh", "mirror", "gc", "quota", "roles", "bench", "cleanse", "subagents", "history", "insights", "dash", "why", "ask",
   ]);
   if (!command || command === "shell" || command === "run" || !controlCommands.has(command)) {
     const { spawnSync } = await import("node:child_process");
@@ -545,6 +552,42 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
       has(args, "--json") ? printJson(found) : console.log(formatInsights(found));
       return;
     }
+    case "dash": {
+      if (has(args, "--watch")) {
+        const interval = Math.max(1, Number(option(args, "--interval") ?? 3));
+        while (true) {
+          process.stdout.write("\x1b[2J\x1b[H");
+          console.log(renderDashboard(mafia.config.stateRoot));
+          console.log(`\n  refresh ${interval}s - Ctrl-C to stop`);
+          await Bun.sleep(interval * 1000);
+        }
+      }
+      console.log(renderDashboard(mafia.config.stateRoot));
+      return;
+    }
+    case "why": {
+      const value = explainJob(mafia.config.stateRoot, required(args[0], "The job ID is required."));
+      has(args, "--json") ? printJson(value) : console.log(formatExplanation(value));
+      return;
+    }
+    case "ask": {
+      // ACP returns a typed result and a stop reason, so nothing has to be
+      // guessed out of a stream. Only the harnesses that speak it are offered.
+      const harness = option(args, "--harness") ?? "omp";
+      if (!speaksAcp(harness)) throw new Error(`${harness} does not speak ACP. Use omp or cline.`);
+      const cwd = option(args, "--cwd") ?? process.cwd();
+      const spec = acpHarnesses[harness]!(cwd, option(args, "--model"));
+      const result = await runOverAcp({
+        ...spec,
+        cwd,
+        prompt: required(option(args, "--prompt"), "--prompt is required."),
+        timeoutMs: option(args, "--timeout") ? Number(option(args, "--timeout")) * 1000 : undefined,
+        onTool: has(args, "--quiet") ? undefined : (tool) => console.error(`  ${tool}`),
+      });
+      has(args, "--json") ? printJson(result) : console.log(result.text);
+      if (result.stopReason !== "end_turn") process.exitCode = 1;
+      return;
+    }
     case "install-updater":
       printJson(installUpdateAutomation());
       return;
@@ -623,6 +666,15 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     case "doctor": {
       const checks = runDoctor();
       has(args, "--json") ? printJson(checks) : console.log(formatDoctor(checks));
+      if (has(args, "--fix")) {
+        const { spawnSync } = await import("node:child_process");
+        console.log("");
+        console.log(formatFixes(applyFixes(checks, (fixArgs) => {
+          const result = spawnSync("bun", [join(repoRoot, "src", "cli.ts"), ...fixArgs], { encoding: "utf8", timeout: 300_000 });
+          return { ok: result.status === 0, out: `${result.stdout ?? ""}${result.stderr ?? ""}`.trim() };
+        })));
+        return;
+      }
       if (checks.some((check) => check.state === "fail")) process.exitCode = 1;
       return;
     }

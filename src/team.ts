@@ -320,7 +320,13 @@ export class TeamService {
         team.completedAt = new Date().toISOString();
       }
       this.write(team);
-      if (team.state === "running") await Bun.sleep(2000);
+      // Sleep only when there is nothing to start. A wave now dispatches in a
+      // few seconds, so a flat two-second pause between ticks had become a
+      // large share of the time a team spends starting.
+      const moreReady = team.tasks.some((task) =>
+        task.state === "waiting" && (task.dependsOn ?? []).every((id) =>
+          team.tasks.find((other) => other.id === id)?.state === "succeeded"));
+      if (team.state === "running") await Bun.sleep(moreReady ? 150 : 2000);
     }
   }
 
