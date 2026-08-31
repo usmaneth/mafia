@@ -18,6 +18,8 @@ import { formatRoleChanges, formatRoleSuggestions, healthyRoleModels, readConfig
 import { formatMetrics, readMetrics, runBench, usableMetrics } from "./bench";
 import { formatDoctor, runDoctor } from "./doctor";
 import { formatSubagents } from "./format";
+import { formatIngest, ingestTelemetry } from "./telemetry-ingest";
+import { TelemetryStore } from "./telemetry-store";
 import { readActivity } from "../hooks/subagent-activity";
 import {
   exhaustedProviders,
@@ -103,6 +105,7 @@ usage:
   mafia quota [--refresh] [--model SELECTOR] [--json]
   mafia roles [--json] [--suggest]
   mafia subagents [--json]   what each OMP subagent is running and doing
+  mafia history [--ingest] [--models] [--json]   telemetry across every harness
   mafia bench [--models a,b] [--runs N] [--json]   measure real TTFT; spends quota
   mafia cleanse [--repo PATH] [--host NAME] [--agents N] [--all] [--tests] [REQUEST]
   mafia install-updater
@@ -126,7 +129,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     "help", "-h", "--help", "jobs", "status", "watch", "dispatch", "logs", "cancel", "handoff", "compare",
     "team", "hub", "message", "decisions", "decision", "events", "route", "budget", "protocol",
     "sync", "hosts", "install-remote", "eval", "__team-run", "doctor", "models", "scale", "update", "install-updater",
-    "vps", "__vps-refresh", "prs", "__prs-refresh", "mirror", "gc", "quota", "roles", "bench", "cleanse", "subagents",
+    "vps", "__vps-refresh", "prs", "__prs-refresh", "mirror", "gc", "quota", "roles", "bench", "cleanse", "subagents", "history",
   ]);
   if (!command || command === "shell" || command === "run" || !controlCommands.has(command)) {
     const { spawnSync } = await import("node:child_process");
@@ -467,6 +470,34 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     case "subagents": {
       const rows = readActivity();
       has(args, "--json") ? printJson(rows) : console.log(formatSubagents(rows));
+      return;
+    }
+    case "history": {
+      const store = new TelemetryStore(mafia.config.stateRoot);
+      if (has(args, "--ingest")) {
+        const reports = ingestTelemetry(mafia.config.stateRoot, {
+          maxBytes: option(args, "--max-bytes") ? Number(option(args, "--max-bytes")) : undefined,
+        });
+        console.log(formatIngest(reports));
+        console.log("");
+      }
+      if (has(args, "--models")) {
+        const rows = store.modelLatency(Number(option(args, "--min") ?? 5));
+        has(args, "--json") ? printJson(rows) : console.log(rows.length
+          ? ["model latency across every harness", ...rows.map((row) =>
+            `  ${String(Math.round(row.medianTtftMs)).padStart(7)}ms  ${row.model} (${row.harness}, ${row.turns} turns)`)].join("\n")
+          : "no latency recorded yet");
+        return;
+      }
+      const summary = store.summary();
+      if (has(args, "--json")) printJson(summary);
+      else console.log(summary.length
+        ? [`${"HARNESS".padEnd(10)} ${"TURNS".padStart(8)} ${"MODELS".padStart(6)}  ${"FRESH IN".padStart(12)} ${"CACHED IN".padStart(14)} ${"OUT".padStart(12)}  SPAN`,
+          ...summary.map((row) =>
+            `${row.harness.padEnd(10)} ${String(row.turns).padStart(8)} ${String(row.models).padStart(6)}  ` +
+            `${row.inputTokens.toLocaleString().padStart(12)} ${row.cacheReadTokens.toLocaleString().padStart(14)} ${row.outputTokens.toLocaleString().padStart(12)}  ` +
+            `${row.first.slice(0, 10)} to ${row.last.slice(0, 10)}`)].join("\n")
+        : "no telemetry yet - run `mafia history --ingest`");
       return;
     }
     case "install-updater":
