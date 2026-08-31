@@ -137,8 +137,14 @@ export function updateMafia(options: { push?: boolean; deploy?: boolean; gcDays?
   results.push(configureVpsFirst());
   const remote = exec("git", ["remote"]);
   const dirty = exec("git", ["status", "--porcelain"]);
+  // The timer runs wherever the checkout happens to be. Pulling a feature
+  // branch that someone is working on is not the timer's business, and a branch
+  // with no upstream made it report a failure on every run.
+  const upstream = exec("git", ["rev-parse", "--abbrev-ref", "HEAD@{upstream}"]);
   if (!remote.output) {
     results.push({ target: "github", status: "skipped", detail: "No Git remote is configured." });
+  } else if (!upstream.ok) {
+    results.push({ target: "local-code", status: "skipped", detail: "The current branch tracks nothing." });
   } else if (dirty.output) {
     results.push({ target: "local-code", status: "skipped", detail: "The worktree has local changes." });
   } else {
