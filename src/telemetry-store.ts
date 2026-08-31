@@ -80,6 +80,27 @@ export class TelemetryStore {
         ingested_at TEXT NOT NULL
       );
     `);
+    this.migrate();
+  }
+
+  /**
+   * Add columns that a database created by an earlier version is missing.
+   *
+   * `CREATE TABLE IF NOT EXISTS` leaves an existing table alone, so a new
+   * column never appears on a database that already exists. The VPS hit exactly
+   * this: its store predated the `host` column and every insert failed.
+   */
+  private migrate(): void {
+    const columns = (table: string) =>
+      new Set((this.db.query(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map((row) => row.name));
+    const wanted: Array<[string, string, string]> = [
+      ["turns", "host", "TEXT NOT NULL DEFAULT 'local'"],
+      ["sources", "head", "TEXT NOT NULL DEFAULT ''"],
+    ];
+    for (const [table, column, definition] of wanted) {
+      if (columns(table).has(column)) continue;
+      this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+    }
   }
 
   cursor(path: string): { bytesRead: number; size: number; mtimeMs: number; head: string } | undefined {
@@ -131,6 +152,14 @@ export class TelemetryStore {
    * a cache read, so an "input" column alone reads as though the fleet sends
    * more output than input, which is not what happened.
    */
+  /** How much of each harness's on-disk history has actually been read. */
+  coverage(): Array<{ harness: string; files: number; bytesRead: number; total: number }> {
+    return this.db.query(`
+      SELECT harness, COUNT(*) files, COALESCE(SUM(bytes_read),0) bytesRead, COALESCE(SUM(size),0) total
+      FROM sources GROUP BY harness ORDER BY total DESC
+    `).all() as never;
+  }
+
   summary(): Array<{
     harness: string; host: string; turns: number; models: number; first: string; last: string;
     inputTokens: number; outputTokens: number; cacheReadTokens: number;
