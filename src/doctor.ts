@@ -12,6 +12,7 @@ import { healthyRoleModels, readConfiguredRoles } from "./roles";
 import { ModelCatalogService } from "./models";
 import { readMetrics } from "./bench";
 import { JobStore } from "./store";
+import { resultProblems } from "./result-quality";
 import type { HostConfig } from "./types";
 
 export type CheckState = "ok" | "warn" | "fail";
@@ -239,6 +240,27 @@ function catalogHealth(stateRoot: string): Check {
   };
 }
 
+/**
+ * Result extraction degrades silently: the job still says it succeeded.
+ * Nothing else in the system reports it, so it is checked here.
+ */
+function resultExtraction(stateRoot: string): Check {
+  const jobs = new JobStore(stateRoot).list(300);
+  const finished = jobs.filter((job) => job.state === "succeeded");
+  const problems = resultProblems(jobs);
+  if (!finished.length) return { name: "result-extraction", state: "ok", detail: "no finished jobs yet" };
+  const rate = problems.length / finished.length;
+  const harnesses = [...new Set(problems.map((problem) => problem.harness))];
+  return {
+    name: "result-extraction",
+    state: rate > 0.1 ? "fail" : problems.length ? "warn" : "ok",
+    detail: problems.length
+      ? `${problems.length} of ${finished.length} succeeded jobs have no usable result (${harnesses.join(", ")})`
+      : `all ${finished.length} succeeded jobs produced a result`,
+    fix: problems.length ? "mafia results - the harness output shape probably changed" : undefined,
+  };
+}
+
 function database(stateRoot: string): Check {
   const store = new JobStore(stateRoot);
   const indexes = (store.db.query("SELECT name FROM sqlite_master WHERE type='index'").all() as Array<{ name: string }>)
@@ -317,7 +339,8 @@ export function runDoctor(): Check[] {
     if (live.state === "fail") continue;
     checks.push(workerParity(host, facts), diskAndState(host, facts), cursors(host, config.stateRoot, facts));
   }
-  checks.push(quota(config.stateRoot), roles(config.stateRoot), catalogHealth(config.stateRoot), database(config.stateRoot));
+  checks.push(quota(config.stateRoot), roles(config.stateRoot), catalogHealth(config.stateRoot),
+    resultExtraction(config.stateRoot), database(config.stateRoot));
   return checks;
 }
 
