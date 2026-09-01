@@ -25,22 +25,51 @@ export async function showFleetDashboard(ctx: ExtensionCommandContext): Promise<
   let confirming: Proposal | undefined;
   let notice = "";
 
-  const refresh = (): void => {
-    try {
-      body = renderDashboard(stateRoot).split("\n");
-      error = "";
-    } catch (failure) {
-      // A view that throws should say so rather than vanish.
-      error = failure instanceof Error ? failure.message : String(failure);
-    }
+  let refreshing = false;
+
+  /**
+   * Rebuild the view without touching the render loop.
+   *
+   * Rendering the dashboard costs about a hundred milliseconds of database
+   * aggregation. Run inline, that was a visible input hitch every three
+   * seconds inside OMP's own interface, which is the one place a stall is
+   * always noticed. The work happens in a child process; this loop only
+   * swaps in the finished text.
+   */
+  const refresh = (onDone?: () => void): void => {
+    if (refreshing) return;
+    refreshing = true;
+    const child = spawn("bun", [join(repoRoot, "src", "cli.ts"), "dash"], {
+      env: process.env, stdio: ["ignore", "pipe", "pipe"],
+    });
+    let out = "";
+    let err = "";
+    child.stdout?.on("data", (chunk: Buffer) => { out += chunk.toString(); });
+    child.stderr?.on("data", (chunk: Buffer) => { err += chunk.toString(); });
+    child.on("close", (code: number | null) => {
+      refreshing = false;
+      if (code === 0 && out.trim()) {
+        body = out.trimEnd().split("\n");
+        error = "";
+      } else {
+        // A view that fails should say so rather than vanish or go stale
+        // silently; the previous text stays visible underneath.
+        error = (err || `dash exited ${code}`).trim().slice(0, 120);
+      }
+      onDone?.();
+    });
+    child.on("error", (failure: Error) => {
+      refreshing = false;
+      error = failure.message.slice(0, 120);
+      onDone?.();
+    });
   };
   refresh();
 
   await ctx.ui.custom<void>((tui, theme, _keybindings, done) => {
     const timer = setInterval(() => {
       if (paused) return;
-      refresh();
-      tui.requestRender();
+      refresh(() => tui.requestRender());
     }, REFRESH_MS);
     (timer as { unref?: () => void }).unref?.();
 
@@ -103,7 +132,7 @@ export async function showFleetDashboard(ctx: ExtensionCommandContext): Promise<
               const outcome = applyProposal(new ProposalStore(stateRoot), chosen, defaultApplyDeps(stateRoot));
               notice = `${outcome.ok ? "applied" : "FAILED"}: ${outcome.detail.slice(0, 56)}`;
             }
-            refresh();
+            refresh(() => tui.requestRender());
           } else {
             confirming = undefined;
             notice = "cancelled";
@@ -130,13 +159,12 @@ export async function showFleetDashboard(ctx: ExtensionCommandContext): Promise<
           return;
         }
         if (matchesKey(data, "r")) {
-          refresh();
-          tui.requestRender();
+          refresh(() => tui.requestRender());
           return;
         }
         if (matchesKey(data, "p")) {
           paused = !paused;
-          if (!paused) refresh();
+          if (!paused) refresh(() => tui.requestRender());
           tui.requestRender();
           return;
         }

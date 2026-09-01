@@ -127,3 +127,48 @@ describe("worker", () => {
     expect(status.result).toBe("FAKE_OMP_OK");
   });
 });
+
+describe("result extraction fallback", () => {
+  test("a run that emits only transport records yields an empty result, not the transport", () => {
+    // Three real jobs carried OMP's session header as their "result": the run
+    // died before any agent message, and the raw-tail fallback dressed the
+    // transport up as an answer. Empty is the truth, and the quality check
+    // reads empty as "no usable result" instead of mistaking JSON for text.
+    const root = tempRoot();
+    const bin = join(root, "bin");
+    const stateRoot = join(root, "state");
+    mkdirSync(bin, { recursive: true });
+    const fakeOmp = join(bin, "omp");
+    writeFileSync(
+      fakeOmp,
+      "#!/bin/sh\nprintf '%s\\n' '{\"type\":\"session\",\"version\":3,\"id\":\"01a0\"}'\n",
+    );
+    chmodSync(fakeOmp, 0o755);
+
+    const spec: JobSpec = {
+      id: "job-transport-only",
+      title: "transport only",
+      prompt: "noop",
+      harness: "omp",
+      host: "local",
+      isolate: false,
+      labels: [],
+      createdAt: new Date().toISOString(),
+      stateRoot,
+      timeoutSeconds: 30,
+    };
+    const jobDir = join(stateRoot, "jobs", spec.id);
+    mkdirSync(jobDir, { recursive: true });
+    const specPath = join(jobDir, "spec.json");
+    writeFileSync(specPath, JSON.stringify(spec));
+
+    const result = spawnSync(process.execPath, [join(import.meta.dir, "..", "worker", "worker.mjs"), specPath], {
+      env: { ...process.env, PATH: `${bin}:${process.env.PATH}` },
+      encoding: "utf8",
+    });
+    expect(result.status).toBe(0);
+    const status = JSON.parse(readFileSync(join(jobDir, "status.json"), "utf8")) as JobStatus;
+    expect(status.state).toBe("succeeded");
+    expect(status.result).toBe("");
+  });
+});

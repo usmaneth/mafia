@@ -151,15 +151,35 @@ export function ageHours(iso: string, now = Date.now()): number {
   return Math.max(0, (now - new Date(iso).getTime()) / 3_600_000);
 }
 
-export function formatReviewQueue(queue: ReviewQueue | undefined, now = Date.now()): string {
+/**
+ * An OSC 8 hyperlink, when the output is a terminal that can take one.
+ *
+ * tmux forwards these once its hyperlinks feature is on, and iTerm2 renders
+ * them as clickable text. Piped output gets the plain text: a log file full of
+ * escape sequences is worse than no link.
+ *
+ * This stays out of the dashboard's text on purpose - the TUI truncates lines
+ * to the pane width by column count, and cutting an escape sequence in half
+ * leaks its tail into the screen.
+ */
+export function hyperlink(text: string, url: string, isTty = process.stdout.isTTY ?? false): string {
+  if (!isTty) return text;
+  return `\u001b]8;;${url}\u0007${text}\u001b]8;;\u0007`;
+}
+
+export function formatReviewQueue(queue: ReviewQueue | undefined, now = Date.now(), isTty = process.stdout.isTTY ?? false): string {
   if (!queue) return "no review data yet - run mafia review --refresh";
   if (!queue.items.length) return "nothing is waiting on review";
   const age = (iso: string) => {
     const hours = ageHours(iso, now);
     return hours < 48 ? `${Math.round(hours)}h` : `${Math.round(hours / 24)}d`;
   };
-  const lines = queue.items.map((item) =>
-    `  ${age(item.createdAt).padStart(4)}  ${item.status.padEnd(17)} ${item.repo.split("/")[1]}#${item.number}  ${item.title.slice(0, 46)}\n        ${item.url}`);
+  const lines = queue.items.map((item) => {
+    const label = `${item.repo.split("/")[1]}#${item.number}`;
+    const head = `  ${age(item.createdAt).padStart(4)}  ${item.status.padEnd(17)} ${hyperlink(label, item.url, isTty)}  ${item.title.slice(0, 46)}`;
+    // With a clickable label the raw URL is noise; without one it is the link.
+    return isTty ? head : `${head}\n        ${item.url}`;
+  });
   if (queue.errors.length) lines.push(`  (unreachable: ${queue.errors.map((error) => error.split(":")[0]).join(", ")})`);
   return lines.join("\n");
 }

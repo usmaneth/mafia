@@ -245,7 +245,10 @@ function catalogHealth(stateRoot: string): Check {
  * Nothing else in the system reports it, so it is checked here.
  */
 function resultExtraction(stateRoot: string): Check {
-  const jobs = new JobStore(stateRoot).list(300);
+  // Health describes now. Extraction failures from weeks ago stay visible in
+  // `mafia results`, but a warning that can never clear stops being read.
+  const cutoff = new Date(Date.now() - 7 * 86_400_000).toISOString();
+  const jobs = new JobStore(stateRoot).list(300).filter((job) => job.updatedAt >= cutoff);
   const finished = jobs.filter((job) => job.state === "succeeded");
   const problems = resultProblems(jobs);
   if (!finished.length) return { name: "result-extraction", state: "ok", detail: "no finished jobs yet" };

@@ -258,7 +258,11 @@ function extractResult(raw) {
   }
   if (result.trim()) return result.trim();
   const plain = raw.split("\n").filter((line) => line.trim() && !line.trim().startsWith("{")).join("\n");
-  return (plain || raw).slice(-20000).trim();
+  if (plain) return plain.slice(-20000).trim();
+  // Only transport records remain, so the agent never produced a message. An
+  // empty result is the truth; the raw stream tail would masquerade as one -
+  // three jobs carried OMP's session header as their "result" this way.
+  return "";
 }
 
 function numeric(value) {

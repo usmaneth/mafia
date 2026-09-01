@@ -125,3 +125,35 @@ describe("review queue", () => {
     expect(value).toContain("unreachable");
   });
 });
+
+import { hyperlink } from "../src/review-queue";
+
+describe("hyperlinks", () => {
+  const ESC = String.fromCharCode(27);
+
+  test("wraps the label in OSC 8 for a terminal", () => {
+    const value = hyperlink("nearby#454", "https://x/pr/454", true);
+    expect(value).toContain(ESC + "]8;;https://x/pr/454");
+    expect(value).toContain("nearby#454");
+  });
+
+  test("piped output gets plain text and keeps the raw URL line", () => {
+    // A log file full of escape sequences is worse than no link.
+    expect(hyperlink("label", "https://x", false)).toBe("label");
+    const piped = formatReviewQueue({
+      generatedAt: "x", errors: [],
+      items: [{ repo: "o/r", number: 9, title: "t", url: "https://x/9", createdAt: "2026-09-01T00:00:00Z", updatedAt: "2026-09-01T00:00:00Z", status: "awaiting-review", conflicting: false }],
+    }, Date.now(), false);
+    expect(piped).toContain("https://x/9");
+    expect(piped).not.toContain(ESC + "]8");
+  });
+
+  test("terminal output folds the URL into the clickable label", () => {
+    const tty = formatReviewQueue({
+      generatedAt: "x", errors: [],
+      items: [{ repo: "o/r", number: 9, title: "t", url: "https://x/9", createdAt: "2026-09-01T00:00:00Z", updatedAt: "2026-09-01T00:00:00Z", status: "awaiting-review", conflicting: false }],
+    }, Date.now(), true);
+    expect(tty).toContain(ESC + "]8;;https://x/9");
+    expect(tty.split("\n")).toHaveLength(1);
+  });
+});
