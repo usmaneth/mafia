@@ -10,7 +10,7 @@ import { MafiaService } from "./service";
 import { TeamService } from "./team";
 import { protocolSpec } from "./protocols";
 import { routeTask } from "./router";
-import { catalogCandidates, filterCatalog, ModelCatalogService, parseModelSelector } from "./models";
+import { catalogCandidates, routingSignals, filterCatalog, ModelCatalogService, parseModelSelector } from "./models";
 import { recommendParallelism } from "./scale";
 import { installUpdateAutomation, updateMafia } from "./updater";
 import { formatMirror, mirrorAll, mirrorIsHealthy, readMirrorState, watchMirror } from "./mirror";
@@ -346,7 +346,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
         downgrade: has(args, "--cheap"),
         exhaustedProviders: unavailableProviders(quotaNow, config.stateRoot),
         headroom: (provider) => providerHeadroom(quotaNow, provider),
-      }, new Map(), catalogCandidates(new ModelCatalogService(config.stateRoot).discover(), Object.keys(config.hosts), usableMetrics(config.stateRoot))));
+      }, new Map(), catalogCandidates(new ModelCatalogService(config.stateRoot).discover(), Object.keys(config.hosts), usableMetrics(config.stateRoot), routingSignals(config.stateRoot))));
       return;
     }
     case "models": {

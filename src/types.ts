@@ -322,6 +322,10 @@ export interface RoutingCandidate {
   provider?: string;
   /** True when `latency` came from a measurement rather than a name pattern. */
   latencyMeasured?: boolean;
+  /** Merge rate of pull requests this model produced, when enough exist. */
+  mergeRate?: number;
+  /** Observed share of this harness's input served from cache. */
+  cacheRate?: number;
 }
 
 export interface ModelRecord {

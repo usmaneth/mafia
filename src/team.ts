@@ -10,7 +10,7 @@ import { formatPacket } from "./packet";
 import { rankTaskRoutes, routeTask } from "./router";
 import { providerHeadroom, ProviderUsageService, unavailableProviders } from "./provider-usage";
 import { usableMetrics } from "./bench";
-import { catalogCandidates, ModelCatalogService, resolveCatalogModel } from "./models";
+import { catalogCandidates, routingSignals, ModelCatalogService, resolveCatalogModel } from "./models";
 import { recommendParallelism } from "./scale";
 import type {
   DecisionRecord,
@@ -176,7 +176,7 @@ export class TeamService {
       const needsRouting = ready.some((task) => task.model || !task.harness);
       const catalog = needsRouting ? this.models.cached() ?? this.models.discover() : undefined;
       const candidates = catalog
-        ? catalogCandidates(catalog, Object.keys(this.mafia.config.hosts), usableMetrics(this.mafia.config.stateRoot))
+        ? catalogCandidates(catalog, Object.keys(this.mafia.config.hosts), usableMetrics(this.mafia.config.stateRoot), routingSignals(this.mafia.config.stateRoot))
         : [];
       const routingHistory = needsRouting ? this.mafia.store.routingHistory() : new Map();
       // Read quota once per planning pass. A team plans many tasks, and asking

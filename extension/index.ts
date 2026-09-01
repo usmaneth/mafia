@@ -7,7 +7,7 @@ import { routeTask } from "../src/router";
 import { loadConfig, repoRoot } from "../src/config";
 import { MafiaService } from "../src/service";
 import { TeamService } from "../src/team";
-import { catalogCandidates, filterCatalog, ModelCatalogService } from "../src/models";
+import { catalogCandidates, routingSignals, filterCatalog, ModelCatalogService } from "../src/models";
 import { showFleetDashboard } from "./fleet-dashboard";
 import { usableMetrics } from "../src/bench";
 import { recommendParallelism } from "../src/scale";
@@ -235,7 +235,7 @@ MAFIA DESIGN CHECKPOINT POLICY:
         host: params.host,
         preferredModels: params.preferredModels,
         downgrade: params.cheap,
-      }, new Map(), catalogCandidates(new ModelCatalogService(config.stateRoot).discover(), Object.keys(config.hosts), usableMetrics(config.stateRoot)));
+      }, new Map(), catalogCandidates(new ModelCatalogService(config.stateRoot).discover(), Object.keys(config.hosts), usableMetrics(config.stateRoot), routingSignals(config.stateRoot)));
       return { content: [{ type: "text", text: JSON.stringify(value, null, 2) }], details: value };
     },
   });
@@ -352,7 +352,7 @@ MAFIA DESIGN CHECKPOINT POLICY:
           mafia.config,
           { capability: params.capability ?? "general", host: params.host },
           mafia.store.routingHistory(),
-          catalogCandidates(mafia.models.cached() ?? mafia.models.discover(), Object.keys(mafia.config.hosts), usableMetrics(mafia.config.stateRoot)),
+          catalogCandidates(mafia.models.cached() ?? mafia.models.discover(), Object.keys(mafia.config.hosts), usableMetrics(mafia.config.stateRoot), routingSignals(mafia.config.stateRoot)),
         );
         route = {
           harness: selected.harness,

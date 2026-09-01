@@ -1,4 +1,6 @@
 import { spawnSync } from "node:child_process";
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { loadConfig } from "./config";
 import { toolEnvironment } from "./process";
 import { JobStore } from "./store";
@@ -154,13 +156,52 @@ export function recordOutcomes(stateRoot: string, results: PrResult[]): number {
   })));
 }
 
+export interface ModelOutcomeRecord {
+  model: string;
+  harness: string;
+  prs: number;
+  merged: number;
+  mergeRate: number;
+  at: string;
+}
+
+export function modelOutcomesPath(stateRoot: string): string {
+  return join(stateRoot, "model-outcomes.json");
+}
+
+/**
+ * Persist merge outcomes per model, so routing can read them without a network
+ * call. `mafia landed` asks GitHub live; a route decision cannot.
+ */
+export function recordModelOutcomes(stateRoot: string, byModel: ReturnType<typeof outcomesByModel>): void {
+  const at = new Date().toISOString();
+  const path = modelOutcomesPath(stateRoot);
+  mkdirSync(dirname(path), { recursive: true });
+  const rows: ModelOutcomeRecord[] = byModel.map((row) => ({
+    model: row.model, harness: row.harness, prs: row.prs, merged: row.merged, mergeRate: row.mergeRate, at,
+  }));
+  const temp = `${path}.${process.pid}.tmp`;
+  writeFileSync(temp, `${JSON.stringify(rows, null, 2)}\n`, { mode: 0o600 });
+  renameSync(temp, path);
+}
+
+export function readModelOutcomes(stateRoot: string): ModelOutcomeRecord[] {
+  try {
+    return JSON.parse(readFileSync(modelOutcomesPath(stateRoot), "utf8")) as ModelOutcomeRecord[];
+  } catch {
+    return [];
+  }
+}
+
 export function buildAttribution(stateRoot = loadConfig().stateRoot, limit = 500): {
   links: PrLink[]; results: PrResult[]; byModel: ReturnType<typeof outcomesByModel>;
 } {
   const links = linkJobsToPrs(new JobStore(stateRoot).list(limit));
   const results = fetchPrResults(links);
   recordOutcomes(stateRoot, results);
-  return { links, results, byModel: outcomesByModel(links, results) };
+  const byModel = outcomesByModel(links, results);
+  recordModelOutcomes(stateRoot, byModel);
+  return { links, results, byModel };
 }
 
 export function formatAttribution(value: ReturnType<typeof buildAttribution>): string {

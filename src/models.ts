@@ -184,17 +184,65 @@ export class ModelCatalogService {
 
 const excluded = /(embed|image|audio|speech|tts|video|moderation|rerank|guard|safety|vision-only)/i;
 
+/**
+ * Fold merge outcomes into a model's quality, gently.
+ *
+ * Whether the work was accepted outranks a guess from the model's name, but a
+ * handful of pull requests is a hint, not a verdict: the effect needs at least
+ * five, and is capped so a lucky streak cannot displace a frontier model.
+ */
+function adjustedQuality(base: number, outcome?: { prs: number; mergeRate: number }): number {
+  if (!outcome || outcome.prs < 5) return base;
+  const shift = Math.max(-0.03, Math.min(0.03, (outcome.mergeRate - 0.5) * 0.06));
+  return Math.min(0.99, Math.max(0.5, base + shift));
+}
+
+/**
+ * What a model costs to run here, given how its harness actually caches.
+ *
+ * A cached input token is about a tenth of the fresh price, so a harness that
+ * serves most input from cache is cheaper than its list price says. This is
+ * observed behaviour on this machine, not a promise from the provider.
+ */
+function effectiveCost(base: number, cacheRate?: number): number {
+  if (!base || cacheRate === undefined) return base;
+  const multiplier = (1 - cacheRate) + cacheRate * 0.1;
+  return Math.max(0.02, base * multiplier);
+}
+
+export interface RoutingSignals {
+  /** Merge outcomes per observed model name, from `mafia landed`. */
+  outcomes?: Array<{ model: string; prs: number; mergeRate: number }>;
+  /** Observed cache-read share per harness, from the telemetry corpus. */
+  cacheRates?: Record<string, number>;
+}
+
+/** The live signal bundle for routing, read from local caches only. */
+export function routingSignals(stateRoot: string): RoutingSignals {
+  try {
+    const { readModelOutcomes } = require("./pr-attribution") as typeof import("./pr-attribution");
+    const { TelemetryStore } = require("./telemetry-store") as typeof import("./telemetry-store");
+    return {
+      outcomes: readModelOutcomes(stateRoot),
+      cacheRates: new TelemetryStore(stateRoot).cacheRateByHarness(),
+    };
+  } catch {
+    return {};
+  }
+}
+
 export function catalogCandidates(
   catalog: ModelCatalog,
   hosts: string[],
   metrics: Record<string, ModelMetric> = {},
+  signals: RoutingSignals = {},
 ): RoutingCandidate[] {
   return catalog.models.filter((model) => model.available && !excluded.test(`${model.selector} ${model.name}`)).flatMap((model) =>
-    hosts.map((host) => candidateForModel(model, host, metrics[model.selector]))
+    hosts.map((host) => candidateForModel(model, host, metrics[model.selector], signals))
   );
 }
 
-function candidateForModel(model: ModelRecord, host: string, metric?: ModelMetric): RoutingCandidate {
+function candidateForModel(model: ModelRecord, host: string, metric?: ModelMetric, signals: RoutingSignals = {}): RoutingCandidate {
   const name = `${model.selector} ${model.name}`.toLowerCase();
   const capabilities: TaskCapability[] = ["general"];
   if (/(code|codex|claude|gpt|gemini|grok|kimi|qwen|deepseek|nemotron)/.test(name)) capabilities.push("implementation", "review", "testing");
@@ -206,18 +254,27 @@ function candidateForModel(model: ModelRecord, host: string, metric?: ModelMetri
   const rawCost = model.cost
     ? Math.max(0, model.cost.input) + Math.max(0, model.cost.output)
     : undefined;
+  // Merge outcomes are keyed by the name the provider served, which is usually
+  // the tail of the catalog selector.
+  const tail = model.id.split("/").at(-1)!.toLowerCase();
+  const outcome = signals.outcomes?.find((row) =>
+    row.model.toLowerCase() === model.selector.toLowerCase()
+    || row.model.split("/").at(-1)!.toLowerCase() === tail);
+  const cacheRate = signals.cacheRates?.[model.harness];
   return {
     harness: model.harness,
     model: model.selector,
     host,
     capabilities: [...new Set(capabilities)],
     enabled: true,
-    costWeight: free ? 0 : rawCost === undefined ? (small ? 0.25 : 0.6) : Math.min(1, rawCost / 30),
-    quality: small ? 0.76 : frontier ? 0.97 : 0.84,
+    costWeight: effectiveCost(free ? 0 : rawCost === undefined ? (small ? 0.25 : 0.6) : Math.min(1, rawCost / 30), cacheRate),
+    quality: adjustedQuality(small ? 0.76 : frontier ? 0.97 : 0.84, outcome),
     // Prefer a measured time to first token. The fallback below is a guess from
     // the model's name, which mis-scored every model the pattern never listed.
     latency: latencyWeight(metric) ?? (small ? 0.35 : frontier ? 0.75 : 0.55),
     latencyMeasured: latencyWeight(metric) !== undefined,
+    mergeRate: outcome && outcome.prs >= 5 ? outcome.mergeRate : undefined,
+    cacheRate,
     contextTokens: model.contextWindow,
     provider: model.provider,
   };

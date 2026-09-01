@@ -106,6 +106,8 @@ function scoreCandidate(
       downgrade ? "budget downgrade active" : "normal budget mode",
       remoteBonus ? "VPS-first execution" : "requested host",
       headroom ? `${Math.round(left * 100)}% provider quota left` : "provider quota unknown",
+      ...(candidate.mergeRate !== undefined ? [`${Math.round(candidate.mergeRate * 100)}% of its pull requests merged`] : []),
+      ...(candidate.cacheRate !== undefined ? [`${Math.round(candidate.cacheRate * 100)}% of input cached on this harness`] : []),
     ],
   };
 }

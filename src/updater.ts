@@ -237,6 +237,19 @@ export function updateMafia(options: { push?: boolean; deploy?: boolean; gcDays?
         });
         const age = last?.at ? Date.now() - new Date(last.at).getTime() : Number.POSITIVE_INFINITY;
         if (age < 60 * 60_000) continue;
+        // Merge outcomes ask GitHub once per pull request, so they refresh on
+        // the same hourly cadence as the database pull rather than every pass.
+        try {
+          const { buildAttribution } = require("./pr-attribution") as typeof import("./pr-attribution");
+          const attribution = buildAttribution(stateRoot);
+          if (attribution.byModel.length) {
+            results.push({
+              target: "model-outcomes",
+              status: "ok",
+              detail: `${attribution.results.length} pull request(s) checked; routing now sees merge rates for ${attribution.byModel.length} model(s).`,
+            });
+          }
+        } catch {}
         const report = ingestRemoteTelemetry(host);
         // Only a successful pull sets the marker. Recording a failure would
         // suppress the retry for an hour and hide the problem.

@@ -172,6 +172,23 @@ export class TelemetryStore {
    * a cache read, so an "input" column alone reads as though the fleet sends
    * more output than input, which is not what happened.
    */
+  /**
+   * How much of each harness's input arrives from cache, observed.
+   *
+   * A cached input token costs about a tenth of a fresh one, so two harnesses
+   * with the same list price differ in what they actually cost to run. Only
+   * harnesses with enough volume to mean anything are reported.
+   */
+  cacheRateByHarness(minimumTokens = 10_000_000): Record<string, number> {
+    const rows = this.db.query(`
+      SELECT harness,
+        CAST(SUM(cache_read_tokens) AS REAL) / NULLIF(SUM(cache_read_tokens + input_tokens), 0) rate,
+        SUM(cache_read_tokens + input_tokens) volume
+      FROM turns GROUP BY harness HAVING volume >= ?
+    `).all(minimumTokens) as Array<{ harness: string; rate: number | null; volume: number }>;
+    return Object.fromEntries(rows.filter((row) => row.rate !== null).map((row) => [row.harness, row.rate!]));
+  }
+
   /** Which tools the fleet actually uses, and how heavily. */
   toolUsage(limit = 15): Array<{ harness: string; tool: string; calls: number; turns: number }> {
     return this.db.query(`
