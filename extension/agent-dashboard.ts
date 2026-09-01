@@ -10,6 +10,7 @@ import {
   type AgentDashboardFilter,
 } from "../src/format";
 import { MafiaService } from "../src/service";
+import { copyToClipboard } from "../src/clipboard";
 import type { JobStatus } from "../src/types";
 
 const filters: AgentDashboardFilter[] = ["active", "all", "failed", "vps", "local"];
@@ -161,8 +162,8 @@ export async function showAgentDashboard(ctx: ExtensionCommandContext): Promise<
           });
           scrollView.setScrollOffset(boundedScroll);
           const footer = detailOpen
-            ? ` Esc back | r refresh | l logs | x cancel | arrows/page scroll | ${operation || selected?.state || ""} `
-            : ` q close | Enter details | f view | r refresh | j/k select | ` +
+            ? ` Esc back | r refresh | y copy id | l logs | x cancel | arrows/page scroll | ${operation || selected?.state || ""} `
+            : ` q close | Enter details | y copy id | f view | r refresh | j/k select | ` +
               `${refreshProcess ? "syncing VPS" : filter} `;
           return [
             truncateToWidth(theme.fg("accent", theme.bold(detailOpen ? " Mafia Agent Detail " : " Mafia Agent Hub ")), width),
@@ -201,6 +202,12 @@ export async function showAgentDashboard(ctx: ExtensionCommandContext): Promise<
               detailScrollOffset = 0;
             } else if (data === "G") {
               detailScrollOffset = maxScroll;
+            } else if (data === "y" && selectedJob()) {
+              // Mouse selection cannot reach this text - the TUI owns the
+              // mouse - so the id is yanked straight to the clipboard, where
+              // `mafia why` and `mafia logs` want it.
+              const yank = copyToClipboard(selectedJob()!.id);
+              operation = yank.ok ? `copied ${selectedJob()!.id}` : "copy failed";
             }
             requestRender();
             return;
@@ -211,6 +218,9 @@ export async function showAgentDashboard(ctx: ExtensionCommandContext): Promise<
           }
           if (data === "r") {
             refresh();
+          } else if (data === "y" && selectedJob()) {
+            const yank = copyToClipboard(selectedJob()!.id);
+            operation = yank.ok ? `copied ${selectedJob()!.id}` : "copy failed";
           } else if (data === "f" || matchesKey(data, "tab")) {
             filterIndex = (filterIndex + 1) % filters.length;
             scrollOffset = 0;
