@@ -5,6 +5,7 @@ import { ProviderUsageService, readPenalties } from "./provider-usage";
 import { readMirrorState, mirrorIsHealthy } from "./mirror";
 import { buildInsights } from "./insights";
 import { ProposalStore } from "./proposals";
+import { ageHours, readReviewQueue } from "./review-queue";
 import { modelScorecard } from "./why";
 import { readActivity } from "../hooks/subagent-activity";
 import { barChart, gauge, histogram, sparkline } from "./chart";
@@ -50,6 +51,9 @@ export function renderDashboard(stateRoot = loadConfig().stateRoot, now = Date.n
   for (const quota of usage?.providers ?? []) {
     if (quota.usedFraction >= 0.95) alerts.push(`${quota.provider} at ${Math.round(quota.usedFraction * 100)}% of quota`);
   }
+  const review = readReviewQueue(stateRoot);
+  const waiting = (review?.items ?? []).filter((item) => item.status === "awaiting-review" && ageHours(item.createdAt, now) > 24);
+  if (waiting.length) alerts.push(`${waiting.length} pull request(s) waiting more than a day for review`);
   if (alerts.length) {
     out.push(rule("attention"), ...alerts.map((line) => `  ! ${line}`), "");
   }
@@ -92,6 +96,21 @@ export function renderDashboard(stateRoot = loadConfig().stateRoot, now = Date.n
       note: `${row.totalTokens >= 1e9 ? `${(row.totalTokens / 1e9).toFixed(1)}B` : `${(row.totalTokens / 1e6).toFixed(0)}M`} total  ` +
         `${(row.outputTokens / 1e6).toFixed(1)}M out  ${row.ttftMs ? `${row.ttftMs}ms` : "unmeasured"}`,
     })), 20, 26));
+    out.push("");
+  }
+
+  // The queue the fleet is actually stuck behind. Outcome data says review is
+  // the constraint - pull requests sit awaiting approval four times more than
+  // any other state - so the oldest waiting items get a named, linked list
+  // rather than an aggregate count.
+  if (review?.items.length) {
+    out.push(rule("review queue - oldest first, this is the constraint"));
+    for (const item of review.items.slice(0, 5)) {
+      const hours = ageHours(item.createdAt, now);
+      const age = hours < 48 ? `${Math.round(hours)}h` : `${Math.round(hours / 24)}d`;
+      out.push(`  ${age.padStart(4)}  ${item.status.padEnd(17)} ${item.repo.split("/")[1]}#${item.number}  ${item.title.slice(0, 42)}`);
+      out.push(`        ${item.url}`);
+    }
     out.push("");
   }
 
