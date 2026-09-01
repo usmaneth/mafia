@@ -5,6 +5,9 @@ import { join } from "node:path";
 import { renderDashboard } from "../src/dashboard";
 import { loadConfig, repoRoot } from "../src/config";
 import { applyProposal, defaultApplyDeps, ProposalStore, type Proposal } from "../src/proposals";
+import { copyToClipboard, formatCopyTargets, type CopyTarget } from "../src/clipboard";
+import { readReviewQueue } from "../src/review-queue";
+import { JobStore } from "../src/store";
 
 const REFRESH_MS = 3000;
 
@@ -23,7 +26,31 @@ export async function showFleetDashboard(ctx: ExtensionCommandContext): Promise<
   let paused = false;
   let scroll = 0;
   let confirming: Proposal | undefined;
+  let copyTargets: CopyTarget[] | undefined;
   let notice = "";
+
+  /**
+   * What a person actually reaches for: job ids to feed back into commands,
+   * pull-request URLs, and the exact command a proposal would run. Mouse
+   * selection cannot reach any of them - the TUI owns the mouse - so these are
+   * addressed by digit instead.
+   */
+  const collectCopyTargets = (): CopyTarget[] => {
+    const targets: CopyTarget[] = [];
+    try {
+      for (const job of new JobStore(stateRoot).list(50)) {
+        if (!["queued", "starting", "running"].includes(job.state)) continue;
+        targets.push({ label: `job ${job.title.split("\n")[0]?.slice(0, 18) ?? ""}`, text: job.id });
+      }
+      for (const item of readReviewQueue(stateRoot)?.items.slice(0, 4) ?? []) {
+        targets.push({ label: `pr ${item.repo.split("/")[1]}#${item.number}`, text: item.url });
+      }
+      for (const proposal of new ProposalStore(stateRoot).list().slice(0, 3)) {
+        targets.push({ label: `cmd ${proposal.title.slice(0, 22)}`, text: proposal.action });
+      }
+    } catch {}
+    return targets.slice(0, 9);
+  };
 
   let refreshing = false;
 
@@ -76,7 +103,10 @@ export async function showFleetDashboard(ctx: ExtensionCommandContext): Promise<
     return {
       render(width: number): readonly string[] {
         const rows = Math.max(6, (process.stdout.rows ?? 40) - 4);
-        const lines = [...body, ...(error ? ["", `  error: ${error}`] : [])].map((line) => {
+        const source = copyTargets
+          ? ["copy to clipboard - press the number", "", ...formatCopyTargets(copyTargets)]
+          : [...body, ...(error ? ["", `  error: ${error}`] : [])];
+        const lines = source.map((line) => {
           // Section rules and alerts carry the structure, so they are the only
           // things worth colouring; the charts read on their own.
           const text = line.startsWith("  ! ")
@@ -100,11 +130,13 @@ export async function showFleetDashboard(ctx: ExtensionCommandContext): Promise<
           },
         });
         view.setScrollOffset(scroll);
-        const footer = confirming
-          ? ` approve "${confirming.title.slice(0, 48)}"? y/n `
-          : notice
+        const footer = copyTargets
+          ? ` copy: press 1-${Math.max(1, copyTargets.length)} | esc cancel `
+          : confirming
+            ? ` approve "${confirming.title.slice(0, 48)}"? y/n `
+            : notice
             ? ` ${notice.slice(0, 70)} `
-            : ` q close | r refresh | p ${paused ? "resume" : "pause"} | 1-4 approve proposal | arrows scroll `;
+            : ` q close | r refresh | c copy | p ${paused ? "resume" : "pause"} | 1-4 approve proposal | arrows scroll `;
         return [
           truncateToWidth(theme.fg("accent", theme.bold(" Mafia Fleet ")), width),
           ...view.render(width),
@@ -113,6 +145,21 @@ export async function showFleetDashboard(ctx: ExtensionCommandContext): Promise<
       },
       handleInput(data: string): void {
         const rows = Math.max(6, (process.stdout.rows ?? 40) - 4);
+        if (copyTargets) {
+          const digit = /^[1-9]$/.test(data) ? Number(data) : undefined;
+          if (digit && copyTargets[digit - 1]) {
+            const target = copyTargets[digit - 1]!;
+            const result = copyToClipboard(target.text);
+            notice = result.ok
+              ? `copied ${target.label.trim()} (${result.via})${result.truncated ? " - truncated" : ""}`
+              : "copy failed - no clipboard path worked";
+          } else {
+            notice = "copy cancelled";
+          }
+          copyTargets = undefined;
+          tui.requestRender();
+          return;
+        }
         // A pending confirmation owns the keyboard until answered. Applying a
         // config change off a single stray keystroke is how a dashboard becomes
         // dangerous, so the digit only selects and y is the consent.
@@ -137,6 +184,12 @@ export async function showFleetDashboard(ctx: ExtensionCommandContext): Promise<
             confirming = undefined;
             notice = "cancelled";
           }
+          tui.requestRender();
+          return;
+        }
+        if (matchesKey(data, "c")) {
+          copyTargets = collectCopyTargets();
+          notice = "";
           tui.requestRender();
           return;
         }

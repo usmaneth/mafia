@@ -88,3 +88,45 @@ describe("doctor --fix", () => {
     expect(formatFixes([])).toContain("nothing needed fixing");
   });
 });
+
+import { copyToClipboard, formatCopyTargets, osc52 } from "../src/clipboard";
+
+describe("clipboard", () => {
+  const ESC = String.fromCharCode(27);
+  const BEL = String.fromCharCode(7);
+
+  test("osc52 wraps base64 in the escape frame terminals expect", () => {
+    const value = osc52("job-123");
+    expect(value.startsWith(ESC + "]52;c;")).toBe(true);
+    expect(value.endsWith(BEL)).toBe(true);
+    expect(Buffer.from(value.slice(7, -1), "base64").toString()).toBe("job-123");
+  });
+
+  test("a copy actually lands on this machine's clipboard", () => {
+    // pbcopy needs no tty, so this is testable here; the OSC 52 half can only
+    // be proven in a real terminal.
+    const result = copyToClipboard("mafia-clipboard-test-value");
+    expect(result.ok).toBe(true);
+    const { spawnSync } = require("node:child_process") as typeof import("node:child_process");
+    const paste = spawnSync("pbpaste", [], { encoding: "utf8" });
+    expect(paste.stdout).toBe("mafia-clipboard-test-value");
+  });
+
+  test("oversized text is truncated, and says so", () => {
+    // Terminals cap OSC 52 payloads; silent dropping would look like a broken
+    // clipboard rather than a size limit.
+    const result = copyToClipboard("x".repeat(100_000));
+    expect(result.truncated).toBe(true);
+    expect(result.ok).toBe(true);
+  });
+
+  test("targets render as a digit-addressable list", () => {
+    const lines = formatCopyTargets([{ label: "job noop", text: "job-123" }]);
+    expect(lines[0]).toContain("[1]");
+    expect(lines[0]).toContain("job-123");
+  });
+
+  test("an empty list says so instead of showing nothing", () => {
+    expect(formatCopyTargets([])[0]).toContain("nothing here to copy");
+  });
+});
