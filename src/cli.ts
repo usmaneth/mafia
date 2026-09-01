@@ -582,7 +582,10 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
       if (has(args, "--watch")) {
         const interval = Math.max(1, Number(option(args, "--interval") ?? 3));
         while (true) {
-          process.stdout.write("\x1b[2J\x1b[H");
+          // Home the cursor and clear below, rather than wiping the screen:
+          // a full clear repaints from blank every tick, which reads as
+          // flicker at any refresh rate.
+          process.stdout.write("\x1b[H\x1b[J");
           console.log(renderDashboard(mafia.config.stateRoot));
           console.log(`\n  refresh ${interval}s - Ctrl-C to stop`);
           await Bun.sleep(interval * 1000);
