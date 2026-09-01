@@ -1,7 +1,10 @@
 import type { ExtensionCommandContext } from "@oh-my-pi/pi-coding-agent";
 import { matchesKey, ScrollView, truncateToWidth } from "@oh-my-pi/pi-tui";
+import { spawn } from "node:child_process";
+import { join } from "node:path";
 import { renderDashboard } from "../src/dashboard";
-import { loadConfig } from "../src/config";
+import { loadConfig, repoRoot } from "../src/config";
+import { applyProposal, defaultApplyDeps, ProposalStore, type Proposal } from "../src/proposals";
 
 const REFRESH_MS = 3000;
 
@@ -19,6 +22,8 @@ export async function showFleetDashboard(ctx: ExtensionCommandContext): Promise<
   let error = "";
   let paused = false;
   let scroll = 0;
+  let confirming: Proposal | undefined;
+  let notice = "";
 
   const refresh = (): void => {
     try {
@@ -66,14 +71,59 @@ export async function showFleetDashboard(ctx: ExtensionCommandContext): Promise<
           },
         });
         view.setScrollOffset(scroll);
+        const footer = confirming
+          ? ` approve "${confirming.title.slice(0, 48)}"? y/n `
+          : notice
+            ? ` ${notice.slice(0, 70)} `
+            : ` q close | r refresh | p ${paused ? "resume" : "pause"} | 1-4 approve proposal | arrows scroll `;
         return [
           truncateToWidth(theme.fg("accent", theme.bold(" Mafia Fleet ")), width),
           ...view.render(width),
-          truncateToWidth(theme.fg("dim", ` q close | r refresh | p ${paused ? "resume" : "pause"} | arrows scroll `), width),
+          truncateToWidth(confirming ? theme.fg("accent", footer) : theme.fg("dim", footer), width),
         ];
       },
       handleInput(data: string): void {
         const rows = Math.max(6, (process.stdout.rows ?? 40) - 4);
+        // A pending confirmation owns the keyboard until answered. Applying a
+        // config change off a single stray keystroke is how a dashboard becomes
+        // dangerous, so the digit only selects and y is the consent.
+        if (confirming) {
+          if (matchesKey(data, "y")) {
+            const chosen = confirming;
+            confirming = undefined;
+            if (chosen.kind === "bench-model") {
+              // A benchmark runs for minutes; blocking the render loop for it
+              // would freeze the dashboard, so it runs as its own process.
+              const child = spawn("bun", [join(repoRoot, "src", "cli.ts"), "proposals", "approve", chosen.id], {
+                detached: true, stdio: "ignore",
+              });
+              child.unref();
+              notice = "benchmark started in the background";
+            } else {
+              const outcome = applyProposal(new ProposalStore(stateRoot), chosen, defaultApplyDeps(stateRoot));
+              notice = `${outcome.ok ? "applied" : "FAILED"}: ${outcome.detail.slice(0, 56)}`;
+            }
+            refresh();
+          } else {
+            confirming = undefined;
+            notice = "cancelled";
+          }
+          tui.requestRender();
+          return;
+        }
+        const digit = /^[1-4]$/.test(data) ? Number(data) : undefined;
+        if (digit) {
+          const pending = new ProposalStore(stateRoot).list();
+          const chosen = pending[digit - 1];
+          if (chosen) {
+            confirming = chosen;
+            notice = "";
+          } else {
+            notice = `no proposal [${digit}]`;
+          }
+          tui.requestRender();
+          return;
+        }
         if (matchesKey(data, "escape") || matchesKey(data, "q")) {
           clearInterval(timer);
           done();

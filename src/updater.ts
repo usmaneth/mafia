@@ -10,6 +10,7 @@ import { ingestTelemetry } from "./telemetry-ingest";
 import { ingestRemoteTelemetry } from "./telemetry-remote";
 import { ingestPrOutcomes } from "./pr-outcomes";
 import { changedChecks, runDoctor } from "./doctor";
+import { refreshProposals } from "./proposals";
 import { TelemetryStore } from "./telemetry-store";
 import { collectAll } from "./gc";
 import { persistedToolPath, shellQuote, toolEnvironment } from "./process";
@@ -257,6 +258,20 @@ export function updateMafia(options: { push?: boolean; deploy?: boolean; gcDays?
     }
   }
   if (options.telemetry) {
+    // Proposals regenerate here so the dashboard always shows current advice.
+    // Only genuinely new ones are reported, which INSERT OR IGNORE guarantees.
+    try {
+      const proposals = refreshProposals(loadConfig().stateRoot);
+      if (proposals.created) {
+        results.push({
+          target: "proposals",
+          status: "ok",
+          detail: `${proposals.created} new proposal(s) await a decision - mafia proposals`,
+        });
+      }
+    } catch (error) {
+      results.push({ target: "proposals", status: "error", detail: error instanceof Error ? error.message.slice(0, 120) : String(error) });
+    }
     // Health is reported on the transition, not on the state. Repeating the
     // same finding every five minutes is how a check stops being read.
     try {

@@ -4,6 +4,7 @@ import { TelemetryStore } from "./telemetry-store";
 import { ProviderUsageService, readPenalties } from "./provider-usage";
 import { readMirrorState, mirrorIsHealthy } from "./mirror";
 import { buildInsights } from "./insights";
+import { ProposalStore } from "./proposals";
 import { modelScorecard } from "./why";
 import { readActivity } from "../hooks/subagent-activity";
 import { barChart, gauge, histogram, sparkline } from "./chart";
@@ -111,13 +112,37 @@ export function renderDashboard(stateRoot = loadConfig().stateRoot, now = Date.n
     out.push(rule("subagents"), formatSubagents(subagents, now), "");
   }
 
-  const insights = buildInsights(stateRoot).slice(0, 3);
-  if (insights.length) {
-    out.push(rule("what to change next"));
-    for (const insight of insights) out.push(`  ${insight.title}`, `      ${insight.action}`);
-    out.push("");
+  // Decidable proposals first; raw insights only for what has no proposal yet.
+  let proposalCount = 0;
+  try {
+    const store = new ProposalStore(stateRoot);
+    const pending = store.list();
+    proposalCount = pending.length;
+    if (pending.length) {
+      out.push(rule("proposals - approve or dismiss, they wait for you"));
+      pending.slice(0, 4).forEach((p, index) => {
+        out.push(`  [${index + 1}] ${p.auto ? "auto" : "ask "}  ${p.title}`);
+        out.push(`        ${p.tradeoff ? `tradeoff: ${p.tradeoff}` : p.effect}`);
+      });
+      out.push(`  mafia proposals approve N  ·  dismiss N --why '...'`);
+      out.push("");
+    }
+    const settled = store.list(["applied", "failed"]).slice(-2);
+    if (settled.length) {
+      out.push(rule("recently applied"));
+      for (const p of settled) out.push(`  ${p.state === "failed" ? "FAILED" : "done  "}  ${p.title}${p.outcome ? ` - ${p.outcome}` : ""}`);
+      out.push("");
+    }
+  } catch {}
+  if (!proposalCount) {
+    const insights = buildInsights(stateRoot).slice(0, 3);
+    if (insights.length) {
+      out.push(rule("what to change next"));
+      for (const insight of insights) out.push(`  ${insight.title}`, `      ${insight.action}`);
+      out.push("");
+    }
   }
 
-  out.push(`  mafia why JOB  ·  mafia insights  ·  mafia doctor --fix  ·  mafia history --tools`);
+  out.push(`  mafia proposals  ·  mafia why JOB  ·  mafia doctor --fix  ·  mafia history --tools`);
   return out.join("\n");
 }

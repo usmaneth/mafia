@@ -28,6 +28,7 @@ import { acpHarnesses, runOverAcp, speaksAcp } from "./acp";
 import { explainJob, formatExplanation } from "./why";
 import { buildAttribution, formatAttribution } from "./pr-attribution";
 import { formatResultProblems, resultProblems } from "./result-quality";
+import { applyProposal, defaultApplyDeps, formatProposals, ProposalStore, refreshProposals } from "./proposals";
 import { readActivity } from "../hooks/subagent-activity";
 import {
   exhaustedProviders,
@@ -119,6 +120,7 @@ usage:
   mafia ask --prompt TEXT [--harness omp|cline] [--model M]   one turn over ACP
   mafia landed [--json]      which models produce work that actually merges
   mafia results [--json]     jobs that finished without a usable result
+  mafia proposals [approve N|dismiss N --why TEXT] [--json]   decidable changes with evidence
   mafia insights [--json]    what the telemetry says to change next
   mafia bench [--models a,b] [--runs N] [--json]   measure real TTFT; spends quota
   mafia cleanse [--repo PATH] [--host NAME] [--agents N] [--all] [--tests] [REQUEST]
@@ -143,7 +145,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     "help", "-h", "--help", "jobs", "status", "watch", "dispatch", "logs", "cancel", "handoff", "compare",
     "team", "hub", "message", "decisions", "decision", "events", "route", "budget", "protocol",
     "sync", "hosts", "install-remote", "eval", "__team-run", "doctor", "models", "scale", "update", "install-updater",
-    "vps", "__vps-refresh", "prs", "__prs-refresh", "mirror", "gc", "quota", "roles", "bench", "cleanse", "subagents", "history", "insights", "dash", "why", "ask", "landed", "results",
+    "vps", "__vps-refresh", "prs", "__prs-refresh", "mirror", "gc", "quota", "roles", "bench", "cleanse", "subagents", "history", "insights", "dash", "why", "ask", "landed", "results", "proposals",
   ]);
   if (!command || command === "shell" || command === "run" || !controlCommands.has(command)) {
     const { spawnSync } = await import("node:child_process");
@@ -618,6 +620,32 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     case "results": {
       const problems = resultProblems(mafia.listCached(Number(option(args, "--limit") ?? 300)));
       has(args, "--json") ? printJson(problems) : console.log(formatResultProblems(problems));
+      return;
+    }
+    case "proposals": {
+      const store = new ProposalStore(mafia.config.stateRoot);
+      const verb = args[0];
+      if (verb === "approve" || verb === "dismiss") {
+        const ref = required(args[1], "Name a proposal by number or id.");
+        const proposal = store.get(ref);
+        if (!proposal) throw new Error(`No proposal matches "${ref}". Run mafia proposals.`);
+        if (proposal.state !== "pending") throw new Error(`Proposal ${proposal.id} is already ${proposal.state}.`);
+        if (verb === "dismiss") {
+          store.setState(proposal.id, "dismissed", { dismissReason: option(args, "--why") ?? "dismissed by the operator" });
+          console.log(`dismissed: ${proposal.title}`);
+          console.log("  it will not be proposed again");
+          return;
+        }
+        const outcome = applyProposal(store, proposal, defaultApplyDeps(mafia.config.stateRoot));
+        console.log(`${outcome.ok ? (proposal.auto ? "applied" : "approved") : "FAILED"}: ${proposal.title}`);
+        console.log(`  ${outcome.detail}`);
+        return;
+      }
+      refreshProposals(mafia.config.stateRoot);
+      const pending = store.list();
+      has(args, "--json")
+        ? printJson({ pending, recent: store.list(["applied", "failed", "approved"]) })
+        : console.log(formatProposals(pending, store.list(["applied", "failed"])));
       return;
     }
     case "install-updater":
