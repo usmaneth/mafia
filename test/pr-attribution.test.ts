@@ -79,3 +79,49 @@ describe("outcomes by model", () => {
     expect(outcomesByModel(orphan, results)).toHaveLength(0);
   });
 });
+
+import { ageHours, classify, formatReviewQueue, shouldPersistQueue } from "../src/review-queue";
+
+describe("review queue", () => {
+  const raw = (over: Record<string, unknown> = {}) => ({
+    number: 7, title: "t", url: "u", createdAt: "2026-09-01T00:00:00Z", updatedAt: "2026-09-01T00:00:00Z",
+    isDraft: false, reviewDecision: "", mergeStateStatus: "CLEAN", ...over,
+  }) as Parameters<typeof classify>[0];
+
+  test("classifies by what a reader should do next", () => {
+    expect(classify(raw())).toBe("awaiting-review");
+    expect(classify(raw({ reviewDecision: "CHANGES_REQUESTED" }))).toBe("changes-requested");
+    expect(classify(raw({ reviewDecision: "APPROVED" }))).toBe("approved-unmerged");
+    expect(classify(raw({ mergeStateStatus: "DIRTY" }))).toBe("conflicting");
+  });
+
+  test("changes-requested outranks a merge conflict in the label", () => {
+    // Both can be true; the requested changes are the actionable part.
+    expect(classify(raw({ reviewDecision: "CHANGES_REQUESTED", mergeStateStatus: "DIRTY" }))).toBe("changes-requested");
+  });
+
+  test("a total outage never replaces the cache; a genuinely empty queue does", () => {
+    expect(shouldPersistQueue(0, 5, 5)).toBe(false);
+    expect(shouldPersistQueue(0, 0, 5)).toBe(true);
+    expect(shouldPersistQueue(3, 4, 5)).toBe(true);
+  });
+
+  test("ages are hours from creation, never negative", () => {
+    const now = Date.UTC(2026, 8, 2, 12, 0, 0);
+    expect(Math.round(ageHours("2026-09-01T12:00:00Z", now))).toBe(24);
+    expect(ageHours("2027-01-01T00:00:00Z", now)).toBe(0);
+  });
+
+  test("says plainly when nothing waits, and when there is no data at all", () => {
+    expect(formatReviewQueue(undefined)).toContain("no review data yet");
+    expect(formatReviewQueue({ generatedAt: "x", items: [], errors: [] })).toContain("nothing is waiting");
+  });
+
+  test("names repositories it could not reach", () => {
+    const value = formatReviewQueue({
+      generatedAt: "x", errors: ["org/gone: 404"],
+      items: [{ repo: "o/r", number: 1, title: "t", url: "u", createdAt: "2026-09-01T00:00:00Z", updatedAt: "2026-09-01T00:00:00Z", status: "awaiting-review", conflicting: false }],
+    });
+    expect(value).toContain("unreachable");
+  });
+});

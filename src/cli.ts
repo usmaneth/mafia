@@ -28,6 +28,7 @@ import { acpHarnesses, runOverAcp, speaksAcp } from "./acp";
 import { explainJob, formatExplanation } from "./why";
 import { buildAttribution, formatAttribution } from "./pr-attribution";
 import { formatResultProblems, resultProblems } from "./result-quality";
+import { fetchReviewQueue, formatReviewQueue, readReviewQueue } from "./review-queue";
 import { applyProposal, defaultApplyDeps, formatProposals, ProposalStore, refreshProposals } from "./proposals";
 import { readActivity } from "../hooks/subagent-activity";
 import {
@@ -119,6 +120,7 @@ usage:
   mafia why JOB              why this job got the model and host it ran on
   mafia ask --prompt TEXT [--harness omp|cline] [--model M]   one turn over ACP
   mafia landed [--json]      which models produce work that actually merges
+  mafia review [--refresh] [--json]   what is stuck waiting on review, oldest first
   mafia results [--json]     jobs that finished without a usable result
   mafia proposals [approve N|dismiss N --why TEXT] [--json]   decidable changes with evidence
   mafia insights [--json]    what the telemetry says to change next
@@ -145,7 +147,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     "help", "-h", "--help", "jobs", "status", "watch", "dispatch", "logs", "cancel", "handoff", "compare",
     "team", "hub", "message", "decisions", "decision", "events", "route", "budget", "protocol",
     "sync", "hosts", "install-remote", "eval", "__team-run", "doctor", "models", "scale", "update", "install-updater",
-    "vps", "__vps-refresh", "prs", "__prs-refresh", "mirror", "gc", "quota", "roles", "bench", "cleanse", "subagents", "history", "insights", "dash", "why", "ask", "landed", "results", "proposals",
+    "vps", "__vps-refresh", "prs", "__prs-refresh", "mirror", "gc", "quota", "roles", "bench", "cleanse", "subagents", "history", "insights", "dash", "why", "ask", "landed", "results", "proposals", "review",
   ]);
   if (!command || command === "shell" || command === "run" || !controlCommands.has(command)) {
     const { spawnSync } = await import("node:child_process");
@@ -646,6 +648,13 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
       has(args, "--json")
         ? printJson({ pending, recent: store.list(["applied", "failed", "approved"]) })
         : console.log(formatProposals(pending, store.list(["applied", "failed"])));
+      return;
+    }
+    case "review": {
+      const queue = has(args, "--refresh")
+        ? fetchReviewQueue(mafia.config.stateRoot)
+        : readReviewQueue(mafia.config.stateRoot) ?? fetchReviewQueue(mafia.config.stateRoot);
+      has(args, "--json") ? printJson(queue) : console.log(formatReviewQueue(queue));
       return;
     }
     case "install-updater":

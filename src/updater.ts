@@ -11,6 +11,7 @@ import { ingestRemoteTelemetry } from "./telemetry-remote";
 import { ingestPrOutcomes } from "./pr-outcomes";
 import { changedChecks, runDoctor } from "./doctor";
 import { refreshProposals } from "./proposals";
+import { refreshReviewQueue } from "./review-queue";
 import { TelemetryStore } from "./telemetry-store";
 import { collectAll } from "./gc";
 import { persistedToolPath, shellQuote, toolEnvironment } from "./process";
@@ -271,6 +272,11 @@ export function updateMafia(options: { push?: boolean; deploy?: boolean; gcDays?
     }
   }
   if (options.telemetry) {
+    // The review queue is the constraint the outcome data named, so it stays
+    // warm without anyone asking. At most one refresh per ten minutes.
+    try {
+      refreshReviewQueue(loadConfig().stateRoot);
+    } catch {}
     // Proposals regenerate here so the dashboard always shows current advice.
     // Only genuinely new ones are reported, which INSERT OR IGNORE guarantees.
     try {
