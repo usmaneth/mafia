@@ -57,7 +57,7 @@ const telemetry: VpsTelemetry = {
   timers: [{ name: "mafia-update.timer", next: "soon" }],
   processes: [{
     pid: 10,
-    user: "usman",
+    user: "tester",
     state: "S",
     ageSeconds: 30,
     cpuPercent: 1.5,

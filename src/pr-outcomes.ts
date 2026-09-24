@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { loadConfig } from "./config";
+import { loadConfig, requireUser } from "./config";
 import { run, shellQuote } from "./process";
 import { TelemetryStore } from "./telemetry-store";
 import type { HostConfig } from "./types";
@@ -47,10 +47,9 @@ export function parseAutomergeLog(text: string): PrObservation[] {
 
 export function ingestPrOutcomes(host: HostConfig, stateRoot = loadConfig().stateRoot): { observations: number; added: number; detail: string } {
   if (host.kind !== "ssh" || !host.target) return { observations: 0, added: 0, detail: `${host.name} is not reachable.` };
-  const user = host.defaultUser ?? "usman";
-  const log = `/home/${user}/pr-watch/automerge.log`;
   let text: string;
   try {
+    const log = `/home/${requireUser(host)}/pr-watch/automerge.log`;
     // Only the recent tail matters; the log grows without bound.
     text = run("ssh", [host.target, `tail -n 20000 ${shellQuote(log)} 2>/dev/null || true`]);
   } catch (error) {

@@ -3,7 +3,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { loadConfig, repoRoot } from "./config";
+import { loadConfig, repoRoot, requireUser } from "./config";
 import { toolEnvironment } from "./process";
 import { withSshMultiplexing } from "./ssh";
 import { mirrorIsHealthy, readMirrorState } from "./mirror";
@@ -72,7 +72,7 @@ export function probeHost(host: HostConfig, cutoffDays = 7): HostFacts {
   const started = Date.now();
   const script = [
     `printf 'HASH\n'`,
-    `sha256sum ${host.workerPath} /home/${host.defaultUser ?? "usman"}/mafia/worker/worker.mjs 2>/dev/null | awk '{print $1}'`,
+    `sha256sum ${host.workerPath} /home/${requireUser(host)}/mafia/worker/worker.mjs 2>/dev/null | awk '{print $1}'`,
     `printf 'DISK\n'; df -P / | tail -1 | awk '{print $5}' | tr -d %`,
     `printf 'OWNED\n'; du -sb ${host.stateRoot} 2>/dev/null | cut -f1`,
     `printf 'WORKTREES\n'; find ${host.stateRoot}/worktrees -mindepth 2 -maxdepth 2 -type d -mtime +${cutoffDays} 2>/dev/null | wc -l`,
@@ -296,7 +296,7 @@ function diskAndState(host: HostConfig, facts: HostFacts, cutoffDays = 7): Check
       detail: `${percent}% used; Mafia state is ${owned || "unknown"}`,
       fix: reclaimable
         ? `mafia gc --days 3 reclaims ${reclaimable} director(ies).`
-        : `Mafia has nothing left to reclaim. For the rest: ssh ${host.target} 'du -sh /home/${host.defaultUser ?? "usman"}/* | sort -rh | head'`,
+        : `Mafia has nothing left to reclaim. For the rest: ssh ${host.target} 'du -sh /home/${requireUser(host)}/* | sort -rh | head'`,
     };
   }
   return {
@@ -334,13 +334,17 @@ export function runDoctor(): Check[] {
   const checks: Check[] = [toolchain(), timer(), mirror(config.stateRoot)];
   for (const host of Object.values(config.hosts)) {
     if (host.kind !== "ssh" || !host.target) continue;
-    const facts = probeHost(host);
-    const live = reachable(host, facts);
-    checks.push(live);
-    // Every remaining host check needs the connection, so skip them cleanly
-    // rather than emitting a cascade of failures that all mean the same thing.
-    if (live.state === "fail") continue;
-    checks.push(workerParity(host, facts), diskAndState(host, facts), cursors(host, config.stateRoot, facts));
+    try {
+      const facts = probeHost(host);
+      const live = reachable(host, facts);
+      checks.push(live);
+      // Every remaining host check needs the connection, so skip them cleanly
+      // rather than emitting a cascade of failures that all mean the same thing.
+      if (live.state === "fail") continue;
+      checks.push(workerParity(host, facts), diskAndState(host, facts), cursors(host, config.stateRoot, facts));
+    } catch (error) {
+      checks.push({ name: `host:${host.name}`, state: "fail", detail: error instanceof Error ? error.message : String(error) });
+    }
   }
   checks.push(quota(config.stateRoot), roles(config.stateRoot), catalogHealth(config.stateRoot),
     resultExtraction(config.stateRoot), database(config.stateRoot));

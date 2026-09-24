@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { loadConfig } from "./config";
+import { loadConfig, requireUser } from "./config";
 import { run, shellQuote } from "./process";
 import { JobStore } from "./store";
 import type { HostConfig, JobStatus } from "./types";
@@ -170,7 +170,7 @@ export function collectHost(host: HostConfig, options: GcOptions = {}): GcReport
     } else {
       // Rotate rather than truncate in place. A truncation while a worker
       // appends would corrupt the line the worker is writing.
-      remote(host, `mv ${shellQuote(audit)} ${shellQuote(`${audit}.1`)} && : > ${shellQuote(audit)} && chown ${shellQuote(host.defaultUser ?? "usman")} ${shellQuote(audit)}`);
+      remote(host, `mv ${shellQuote(audit)} ${shellQuote(`${audit}.1`)} && : > ${shellQuote(audit)} && chown ${shellQuote(requireUser(host))} ${shellQuote(audit)}`);
       entry.removed = true;
       report.reclaimedBytes += auditBytes;
     }
