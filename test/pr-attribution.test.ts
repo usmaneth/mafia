@@ -26,12 +26,12 @@ describe("finding pull request numbers", () => {
 
 describe("working out the repository", () => {
   test("reads the slug out of a remote workspace path", () => {
-    expect(repoOfJob(job({ repo: "/home/usman/mafia-workspaces/zeta-chain/ai-memoryless-client" })))
+    expect(repoOfJob(job({ repo: "/home/tester/mafia-workspaces/zeta-chain/ai-memoryless-client" })))
       .toBe("zeta-chain/ai-memoryless-client");
   });
 
   test("falls back to a known project name", () => {
-    expect(repoOfJob(job({ cwd: "/srv/dev/nearby" }))).toBe("anuma-ai/nearby");
+    expect(repoOfJob(job({ cwd: "/tmp/work/nearby" }))).toBe("anuma-ai/nearby");
   });
 
   test("skips a job that gives no hint rather than guessing a default", () => {

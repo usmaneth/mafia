@@ -3,7 +3,7 @@ import { dirname, join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { toolEnvironment } from "./process";
 import { withSshMultiplexing } from "./ssh";
-import { loadConfig, repoRoot, resolveHost } from "./config";
+import { loadConfig, repoRoot, requireUser, resolveHost } from "./config";
 import { shellQuote } from "./process";
 import type { PrOperationalState, PrTelemetry } from "./types";
 
@@ -50,9 +50,10 @@ export function refreshPrTelemetry(force = false): PrTelemetry {
   const host = resolveHost(config, "vps");
   if (!host.target) throw new Error("The VPS target is not configured.");
   const started = performance.now();
-  const remote = "/home/usman/mafia/src/pr-probe.ts";
-  const command = `sudo -iu ${shellQuote(host.defaultUser ?? "usman")} bash -lc ` +
-    shellQuote(`/home/usman/.bun/bin/bun ${remote}`);
+  const remoteUser = requireUser(host);
+  const remote = `/home/${remoteUser}/mafia/src/pr-probe.ts`;
+  const command = `sudo -iu ${shellQuote(remoteUser)} bash -lc ` +
+    shellQuote(`/home/${remoteUser}/.bun/bin/bun ${remote}`);
   const result = spawnSync("ssh", withSshMultiplexing("ssh", [
     "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", host.target, command,
   ]), { encoding: "utf8", env: toolEnvironment(), timeout: 45_000, maxBuffer: 4 * 1024 * 1024 });
@@ -107,6 +108,7 @@ export function runPrAutomation(action: PrAutomationAction): void {
 export function installPrAutomation(): void {
   const host = resolveHost(loadConfig(), "vps");
   if (!host.target) throw new Error("The VPS target is not configured.");
+  const remoteUser = requireUser(host);
   const files = [
     "pr-automerge.py",
     "pr-automerge.service",
@@ -115,22 +117,25 @@ export function installPrAutomation(): void {
     "pr-shepherd.timer",
   ];
   for (const file of files) {
-    const result = spawnSync("scp", withSshMultiplexing("scp", [
-      join(repoRoot, "deploy", file),
-      `${host.target}:/tmp/${file}`,
-    ]), { encoding: "utf8", env: toolEnvironment(), timeout: 30_000 });
+    // The tracked unit files carry a __MAFIA_USER__ placeholder instead of a
+    // real account name; fill it in with the configured remote user before
+    // the file reaches the host.
+    const content = readFileSync(join(repoRoot, "deploy", file), "utf8").replaceAll("__MAFIA_USER__", remoteUser);
+    const result = spawnSync("ssh", withSshMultiplexing("ssh", [
+      host.target, `cat > ${shellQuote(`/tmp/${file}`)}`,
+    ]), { input: content, encoding: "utf8", env: toolEnvironment(), timeout: 30_000 });
     if (result.status !== 0) throw new Error((result.stderr || `Cannot upload ${file}.`).trim());
   }
   const install = [
-    "install -m 0755 /tmp/pr-automerge.py /home/usman/pr-watch/automerge.py",
+    `install -m 0755 /tmp/pr-automerge.py /home/${remoteUser}/pr-watch/automerge.py`,
     "install -m 0644 /tmp/pr-automerge.service /etc/systemd/system/pr-automerge.service",
     "install -m 0644 /tmp/pr-automerge.timer /etc/systemd/system/pr-automerge.timer",
     "install -m 0644 /tmp/pr-shepherd.service /etc/systemd/system/pr-shepherd.service",
     "install -m 0644 /tmp/pr-shepherd.timer /etc/systemd/system/pr-shepherd.timer",
-    "sed -i 's/^ALLOW_AUTOMERGE=.*/ALLOW_AUTOMERGE=0/' /home/usman/.hermes/scripts/pr-shepherd.sh",
+    `sed -i 's/^ALLOW_AUTOMERGE=.*/ALLOW_AUTOMERGE=0/' /home/${remoteUser}/.hermes/scripts/pr-shepherd.sh`,
     "systemctl daemon-reload",
     "(systemctl disable --now pr-automerge.service || true)",
-    "python3 -c 'import json; p=\"/home/usman/.hermes/cron/jobs.json\"; d=json.load(open(p)); [j.update(enabled=False) for j in d.get(\"jobs\",[]) if j.get(\"name\")==\"pr-shepherd\"]; json.dump(d,open(p,\"w\"),indent=2)'",
+    `python3 -c 'import json; p="/home/${remoteUser}/.hermes/cron/jobs.json"; d=json.load(open(p)); [j.update(enabled=False) for j in d.get("jobs",[]) if j.get("name")=="pr-shepherd"]; json.dump(d,open(p,"w"),indent=2)'`,
     "systemctl enable --now pr-automerge.timer pr-shepherd.timer",
   ].join(" && ");
   const result = spawnSync("ssh", withSshMultiplexing("ssh", [host.target, install]), { encoding: "utf8", env: toolEnvironment(), timeout: 45_000 });

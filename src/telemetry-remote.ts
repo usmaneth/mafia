@@ -2,7 +2,7 @@ import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Database } from "bun:sqlite";
-import { loadConfig } from "./config";
+import { loadConfig, requireUser } from "./config";
 import { run, shellQuote } from "./process";
 import { TelemetryStore } from "./telemetry-store";
 import type { HostConfig } from "./types";
@@ -32,16 +32,16 @@ export function ingestRemoteTelemetry(host: HostConfig, options: { maxBytes?: nu
   if (host.kind !== "ssh" || !host.target) {
     return { ...empty, detail: `${host.name} is not a reachable SSH host.` };
   }
-  const user = host.defaultUser ?? "usman";
-  const remoteRepo = `/home/${user}/mafia`;
   const budget = options.maxBytes ?? 512 * 1024 * 1024;
-  const inner = [
-    `cd ${shellQuote(remoteRepo)}`,
-    `bun src/cli.ts history --ingest --max-bytes ${budget} --json`,
-  ].join(" && ");
-
   let output: string;
+  let user: string;
   try {
+    user = requireUser(host);
+    const remoteRepo = `/home/${user}/mafia`;
+    const inner = [
+      `cd ${shellQuote(remoteRepo)}`,
+      `bun src/cli.ts history --ingest --max-bytes ${budget} --json`,
+    ].join(" && ");
     output = run("ssh", [host.target, `sudo -iu ${shellQuote(user)} bash -lc ${shellQuote(inner)}`]);
   } catch (error) {
     return { ...empty, ms: Date.now() - started, detail: error instanceof Error ? error.message.slice(0, 160) : String(error) };

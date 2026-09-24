@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, watch, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { spawnSync } from "node:child_process";
-import { loadConfig, repoRoot } from "./config";
+import { loadConfig, repoRoot, requireUser } from "./config";
 import { toolEnvironment } from "./process";
 import { withSshMultiplexing } from "./ssh";
 import type { HostConfig, MirrorReport, MirrorVerdict } from "./types";
@@ -241,7 +241,7 @@ export interface MirrorOptions {
 export function mirrorHost(host: HostConfig, options: MirrorOptions = {}): MirrorReport {
   const startedAt = Date.now();
   const deadline = new Deadline(mirrorDeadlineMs);
-  const remoteRoot = `/home/${host.defaultUser ?? "usman"}/mafia`;
+  const remoteRoot = `/home/${requireUser(host)}/mafia`;
   const base: MirrorReport = {
     host: host.name,
     verdict: "error",

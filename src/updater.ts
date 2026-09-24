@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "
 import { join } from "node:path";
 import { homedir, platform } from "node:os";
 import { spawnSync } from "node:child_process";
-import { loadConfig, repoRoot } from "./config";
+import { loadConfig, repoRoot, requireUser } from "./config";
 import { ModelCatalogService } from "./models";
 import { installPrAutomation } from "./pr";
 import { mirrorAll } from "./mirror";
@@ -354,7 +354,15 @@ export function installUpdateAutomation(): UpdateResult[] {
     results.push({ target: "local-timer", status: load.ok ? "ok" : "error", detail: load.ok ? path : load.output || "launchctl refused the job." });
   }
   for (const host of Object.values(loadConfig().hosts).filter((host) => host.kind === "ssh")) {
-    const service = `[Unit]\nDescription=Refresh Mafia and its model catalog\n[Service]\nType=oneshot\nUser=usman\nEnvironment=HOME=/home/usman\nEnvironment=PATH=/home/usman/.bun/bin:/home/usman/.local/bin:/home/usman/.cargo/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin\nWorkingDirectory=/home/usman/mafia\nExecStart=/home/usman/.bun/bin/bun /home/usman/mafia/src/cli.ts update\n`;
+    let remoteUser: string;
+    try {
+      remoteUser = requireUser(host);
+    } catch (error) {
+      results.push({ target: `${host.name}-timer`, status: "error", detail: error instanceof Error ? error.message : String(error) });
+      continue;
+    }
+    const remoteHome = `/home/${remoteUser}`;
+    const service = `[Unit]\nDescription=Refresh Mafia and its model catalog\n[Service]\nType=oneshot\nUser=${remoteUser}\nEnvironment=HOME=${remoteHome}\nEnvironment=PATH=${remoteHome}/.bun/bin:${remoteHome}/.local/bin:${remoteHome}/.cargo/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin\nWorkingDirectory=${remoteHome}/mafia\nExecStart=${remoteHome}/.bun/bin/bun ${remoteHome}/mafia/src/cli.ts update\n`;
     const timer = `[Unit]\nDescription=Refresh Mafia every 30 minutes\n[Timer]\nOnBootSec=5m\nOnUnitActiveSec=30m\nPersistent=true\n[Install]\nWantedBy=timers.target\n`;
     const encodedService = Buffer.from(service).toString("base64");
     const encodedTimer = Buffer.from(timer).toString("base64");

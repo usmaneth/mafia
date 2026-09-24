@@ -1,16 +1,16 @@
 [Unit]
-Description=Queue verified Usman pull requests for auto-merge
+Description=Queue verified pull requests for auto-merge
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=oneshot
-User=usman
-Environment=HOME=/home/usman
-Environment=PATH=/home/usman/.local/bin:/usr/local/bin:/usr/bin:/bin
-WorkingDirectory=/home/usman/pr-watch
-ExecStart=/usr/bin/python3 /home/usman/pr-watch/automerge.py
+User=__MAFIA_USER__
+Environment=HOME=/home/__MAFIA_USER__
+Environment=PATH=/home/__MAFIA_USER__/.local/bin:/usr/local/bin:/usr/bin:/bin
+WorkingDirectory=/home/__MAFIA_USER__/pr-watch
+ExecStart=/usr/bin/python3 /home/__MAFIA_USER__/pr-watch/automerge.py
 TimeoutStartSec=10m
 MemoryMax=1G
-StandardOutput=append:/home/usman/pr-watch/automerge.log
-StandardError=append:/home/usman/pr-watch/automerge.log
+StandardOutput=append:/home/__MAFIA_USER__/pr-watch/automerge.log
+StandardError=append:/home/__MAFIA_USER__/pr-watch/automerge.log

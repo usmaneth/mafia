@@ -111,10 +111,10 @@ Mafia resets local and VPS isolated worktrees when it restores a checkpoint.
 The VPS uses these paths:
 
 ```text
-/home/usman/mafia
-/home/usman/.omp/profiles/mafia
-/home/usman/.local/share/mafia
-/home/usman/vault -> /srv/vault
+/home/REDACTED/mafia
+/home/REDACTED/.omp/profiles/mafia
+/home/REDACTED/.local/share/mafia
+/home/REDACTED/vault -> /srv/REDACTED
 ```
 
 The VPS uses OMP 18.0.4 and Bun 1.4.0.

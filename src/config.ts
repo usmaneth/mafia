@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import { defaultCandidates } from "./router";
-import type { MafiaConfig } from "./types";
+import type { HostConfig, MafiaConfig } from "./types";
 
 export const repoRoot = dirname(import.meta.dir);
 
@@ -49,10 +49,11 @@ export function defaultConfig(): MafiaConfig {
       vps: {
         name: "vps",
         kind: "ssh",
-        target: "root@15.204.120.156",
-        stateRoot: "/home/usman/.local/share/mafia",
+        // No default target, state root, or remote user: a real deployment
+        // sets these in the local config file (see configPath()), never in
+        // the tracked source.
+        stateRoot: "~/.local/share/mafia",
         workerPath: "/opt/mafia/worker.mjs",
-        defaultUser: "usman",
         maxParallel: 64,
       },
     },
@@ -96,4 +97,15 @@ export function resolveHost(config: MafiaConfig, name?: string) {
   if (!host) throw new Error(`Unknown host: ${hostName}`);
   if (host.kind === "ssh" && !host.target) throw new Error(`Host ${hostName} has no SSH target.`);
   return host;
+}
+
+/**
+ * The remote account name an SSH host runs as. Not defaulted: a real
+ * deployment sets it in its own local config file (see configPath()).
+ */
+export function requireUser(host: HostConfig): string {
+  if (!host.defaultUser) {
+    throw new Error(`Host ${host.name} has no configured remote user (set "defaultUser" in ${configPath()}).`);
+  }
+  return host.defaultUser;
 }

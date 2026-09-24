@@ -1,5 +1,7 @@
 #!/usr/bin/env bun
 import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { homedir } from "node:os";
 import { spawnSync } from "node:child_process";
 import { toolEnvironment } from "./process";
 import { classifyPr } from "./pr";
@@ -25,7 +27,7 @@ function command(name: string, args: string[], timeout = 20_000): string {
 
 function shepherdState(): Record<string, ShepherdState> {
   try {
-    return JSON.parse(readFileSync("/home/usman/.config/pr-shepherd/state.json", "utf8"));
+    return JSON.parse(readFileSync(join(homedir(), ".config", "pr-shepherd", "state.json"), "utf8"));
   } catch {
     return {};
   }

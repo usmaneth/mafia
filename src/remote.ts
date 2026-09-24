@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import type { HostConfig, JobSpec, JobStatus, MafiaEvent, MafiaMessage } from "./types";
-import { loadConfig, repoRoot } from "./config";
+import { loadConfig, repoRoot, requireUser } from "./config";
 import { run, shellQuote, toolEnvironment } from "./process";
 import { withSshMultiplexing } from "./ssh";
 
@@ -188,8 +188,8 @@ function prepareRemoteWorkspace(host: HostConfig, spec: JobSpec): Partial<JobSpe
   const origin = run("git", ["-C", root, "remote", "get-url", "origin"]);
   const slug = repoSlugFromOrigin(origin);
   if (!slug) throw new Error(`Cannot map the Git remote for ${root} to the VPS.`);
-  const user = host.defaultUser;
-  const remoteRepo = `/home/${user ?? "usman"}/mafia-workspaces/${slug}`;
+  const user = requireUser(host);
+  const remoteRepo = `/home/${user}/mafia-workspaces/${slug}`;
   const head = run("git", ["-C", root, "rev-parse", "HEAD"]);
 
   const temp = mkdtempSync(join(tmpdir(), `mafia-snap-`));
