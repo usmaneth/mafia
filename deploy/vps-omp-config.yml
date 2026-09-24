@@ -33,7 +33,7 @@ composer:
 theme:
   dark: dark-terminal
 extensions:
-  - /home/usman/mafia/extension/index.ts
+  - /home/REDACTED/mafia/extension/index.ts
 skills:
   customDirectories:
-    - /home/usman/mafia/skills
+    - /home/REDACTED/mafia/skills

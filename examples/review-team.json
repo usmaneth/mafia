@@ -26,7 +26,7 @@
       "prompt": "Audit the same repository independently. Challenge weak assumptions.",
       "harness": "kimi",
       "host": "vps",
-      "repo": "/home/usman/work/repo"
+      "repo": "/path/to/repo"
     },
     {
       "id": "synthesis",

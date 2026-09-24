@@ -105,7 +105,7 @@ function processes(): VpsProcess[] {
 
 function main(): void {
   const stateRoot = join(homedir(), ".local", "share", "mafia");
-  const repoPath = "/home/usman/mafia";
+  const repoPath = join(homedir(), "mafia");
   const allJobs = jobs(stateRoot);
   const claimed = allJobs.filter((job) => ["queued", "starting", "running"].includes(job.state));
   const live = claimed.filter((job) => pidAlive(job.pid));

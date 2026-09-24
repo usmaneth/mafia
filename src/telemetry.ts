@@ -27,9 +27,10 @@ export function refreshVpsTelemetry(force = false): VpsTelemetry {
   const host = resolveHost(config, "vps");
   if (!host.target) throw new Error("The VPS target is not configured.");
   const started = performance.now();
-  const remote = "/home/usman/mafia/src/vps-probe.ts";
-  const command = `sudo -iu ${shellQuote(host.defaultUser ?? "usman")} bash -lc ` +
-    shellQuote(`/home/usman/.bun/bin/bun ${remote}`);
+  const remoteUser = host.defaultUser ?? "usman";
+  const remote = `/home/${remoteUser}/mafia/src/vps-probe.ts`;
+  const command = `sudo -iu ${shellQuote(remoteUser)} bash -lc ` +
+    shellQuote(`/home/${remoteUser}/.bun/bin/bun ${remote}`);
   const result = spawnSync("ssh", withSshMultiplexing("ssh", [
     "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", host.target, command,
   ]), { encoding: "utf8", env: toolEnvironment(), timeout: 15_000, maxBuffer: 4 * 1024 * 1024 });

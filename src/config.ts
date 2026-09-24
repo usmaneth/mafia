@@ -49,10 +49,11 @@ export function defaultConfig(): MafiaConfig {
       vps: {
         name: "vps",
         kind: "ssh",
-        target: "root@15.204.120.156",
-        stateRoot: "/home/usman/.local/share/mafia",
+        // No default target, state root, or remote user: a real deployment
+        // sets these in the local config file (see configPath()), never in
+        // the tracked source.
+        stateRoot: "~/.local/share/mafia",
         workerPath: "/opt/mafia/worker.mjs",
-        defaultUser: "usman",
         maxParallel: 64,
       },
     },

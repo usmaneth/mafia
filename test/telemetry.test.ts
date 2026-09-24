@@ -19,7 +19,7 @@ const telemetry: VpsTelemetry = {
   memory: { usedBytes: 4_000_000_000, totalBytes: 8_000_000_000, swapUsedBytes: 0, swapTotalBytes: 1_000_000_000 },
   disk: { usedBytes: 70, totalBytes: 100, percent: 70 },
   deployment: {
-    repoPath: "/home/usman/mafia",
+    repoPath: "/home/tester/mafia",
     branch: "master",
     sha: "abc123",
     originSha: "abc123",

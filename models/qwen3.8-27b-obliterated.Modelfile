@@ -1,4 +1,6 @@
-FROM /Users/usmanasim/models/Qwen3.8-27B-OBLITERATED.Q4_K_M.gguf
+# Set this to the local path of the downloaded GGUF file before running
+# `ollama create` (see README.md).
+FROM /path/to/Qwen3.8-27B-OBLITERATED.Q4_K_M.gguf
 RENDERER qwen3.5
 PARSER qwen3.5
 PARAMETER num_ctx 65536
