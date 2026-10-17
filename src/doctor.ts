@@ -9,6 +9,7 @@ import { withSshMultiplexing } from "./ssh";
 import { mirrorIsHealthy, readMirrorState } from "./mirror";
 import { exhaustedProviders, ProviderUsageService, readPenalties } from "./provider-usage";
 import { healthyRoleModels, readConfiguredRoles } from "./roles";
+import { parseOmpVersion, pinnedOmp } from "./omp-sync";
 import { ModelCatalogService } from "./models";
 import { readMetrics } from "./bench";
 import { JobStore } from "./store";
@@ -203,6 +204,30 @@ function quota(stateRoot: string): Check {
   };
 }
 
+/**
+ * The weekly update installs the newest OMP. The extension and the tests are
+ * built against the version in package.json, so a gap between the two is a
+ * prompt to move the pin after a check.
+ */
+function ompVersion(): Check {
+  const installed = sh("omp", ["--version"]);
+  const version = installed.ok ? parseOmpVersion(installed.out) : undefined;
+  if (!version) {
+    return { name: "omp-version", state: "warn", detail: "cannot read the installed OMP version", fix: "Check that omp is on the PATH." };
+  }
+  let pinned: string | undefined;
+  try {
+    pinned = pinnedOmp(JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8")));
+  } catch {}
+  if (pinned === version) return { name: "omp-version", state: "ok", detail: `OMP ${version} matches the pin in package.json` };
+  return {
+    name: "omp-version",
+    state: "warn",
+    detail: `OMP ${version} is installed and package.json pins ${pinned ?? "no single version"}`,
+    fix: `Set @oh-my-pi/pi-coding-agent and @oh-my-pi/pi-tui to ${version} in package.json, run bun install, then bun run check.`,
+  };
+}
+
 function roles(stateRoot: string): Check {
   const catalog = new ModelCatalogService(stateRoot).cached();
   const usage = new ProviderUsageService(stateRoot).cached();
@@ -346,7 +371,7 @@ export function runDoctor(): Check[] {
       checks.push({ name: `host:${host.name}`, state: "fail", detail: error instanceof Error ? error.message : String(error) });
     }
   }
-  checks.push(quota(config.stateRoot), roles(config.stateRoot), catalogHealth(config.stateRoot),
+  checks.push(quota(config.stateRoot), ompVersion(), roles(config.stateRoot), catalogHealth(config.stateRoot),
     resultExtraction(config.stateRoot), database(config.stateRoot));
   return checks;
 }

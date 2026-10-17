@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { homedir, platform } from "node:os";
 import { spawnSync } from "node:child_process";
 import { loadConfig, repoRoot, requireUser } from "./config";
@@ -16,6 +16,9 @@ import { TelemetryStore } from "./telemetry-store";
 import { collectAll } from "./gc";
 import { persistedToolPath, shellQuote, toolEnvironment } from "./process";
 import { withSshMultiplexing } from "./ssh";
+import { buildShowcase, mergeShowcase, parseOmpVersion, parseUpdateCheck, refreshDue, roleUpgrades, type SyncState } from "./omp-sync";
+import { readConfiguredRoles } from "./roles";
+import type { ModelRecord } from "./types";
 
 interface UpdateResult {
   target: string;
@@ -121,6 +124,95 @@ function configureCodexOAuthRoles(): UpdateResult {
   }
 }
 
+function syncStatePath(stateRoot: string): string {
+  return join(stateRoot, "omp-sync.json");
+}
+
+function readSyncState(stateRoot: string): SyncState | undefined {
+  try {
+    return JSON.parse(readFileSync(syncStatePath(stateRoot), "utf8")) as SyncState;
+  } catch {
+    return undefined;
+  }
+}
+
+function writeSyncState(stateRoot: string, state: SyncState): void {
+  const path = syncStatePath(stateRoot);
+  mkdirSync(dirname(path), { recursive: true });
+  const temp = `${path}.${process.pid}.tmp`;
+  writeFileSync(temp, `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 });
+  renameSync(temp, path);
+}
+
+function installedOmp(): string | undefined {
+  const result = exec("omp", ["--version"]);
+  return result.ok ? parseOmpVersion(result.output) : undefined;
+}
+
+/** Install the newest stable OMP. `omp update` does the install and handles a busy binary. */
+function updateOmp(): UpdateResult {
+  const check = exec("omp", ["update", "--check"]);
+  if (!check.ok) return { target: "omp-version", status: "error", detail: check.output || "omp update --check failed and printed nothing." };
+  const { current, latest } = parseUpdateCheck(check.output);
+  if (!latest) return { target: "omp-version", status: "ok", detail: `OMP ${current ?? "unknown"} is current.` };
+  const update = exec("omp", ["update"]);
+  const installed = installedOmp();
+  if (update.ok && installed === latest) {
+    return { target: "omp-version", status: "ok", detail: `Updated OMP from ${current ?? "unknown"} to ${latest}.` };
+  }
+  return {
+    target: "omp-version",
+    status: "error",
+    detail: `omp update to ${latest} left version ${installed ?? "unknown"}. ${update.output.slice(-200)}`.trim(),
+  };
+}
+
+/** A catalog this small means discovery failed, so the list is not rewritten. */
+const MIN_CATALOG_ENTRIES = 50;
+
+/**
+ * Set the model page to the newest model of every family.
+ *
+ * A model that a person added by hand stays. The roles are only read, never
+ * changed: a role that is behind the catalog shows in the result and nowhere else.
+ */
+function syncModelPage(models: ModelRecord[], stateRoot: string, state: SyncState | undefined): UpdateResult {
+  const entries = models.filter((model) => model.harness === "omp").map((model) => ({ provider: model.provider, id: model.id }));
+  if (entries.length < MIN_CATALOG_ENTRIES) {
+    return { target: "omp-model-page", status: "skipped", detail: `Only ${entries.length} OMP models came back, so the list stays as it is.` };
+  }
+  const roles = readConfiguredRoles();
+  if (!Object.keys(roles).length) {
+    return { target: "omp-model-page", status: "skipped", detail: "Cannot read the model roles, so the list stays as it is." };
+  }
+  const current = exec("omp", ["--profile", "mafia", "config", "get", "enabledModels", "--json"]);
+  let currentList: string[];
+  try {
+    const value = (JSON.parse(current.output) as { value?: unknown }).value;
+    currentList = Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+  } catch {
+    return { target: "omp-model-page", status: "error", detail: current.output.slice(0, 200) || "Cannot read enabledModels." };
+  }
+  const next = buildShowcase(entries, Object.values(roles));
+  const merged = mergeShowcase(next, currentList, state?.managed ?? []);
+  const changed = JSON.stringify(merged) !== JSON.stringify(currentList);
+  if (changed) {
+    const set = exec("omp", ["--profile", "mafia", "config", "set", "enabledModels", JSON.stringify(merged)]);
+    if (!set.ok) return { target: "omp-model-page", status: "error", detail: set.output.slice(0, 200) || "Cannot set enabledModels." };
+  }
+  const now = Date.now();
+  writeSyncState(stateRoot, { at: now, attemptedAt: now, omp: installedOmp(), managed: next });
+  const behind = roleUpgrades(entries, roles);
+  const note = behind.length
+    ? ` Roles behind the catalog: ${behind.map((entry) => `${entry.role} ${entry.from} -> ${entry.to}`).join("; ")}.`
+    : "";
+  return {
+    target: "omp-model-page",
+    status: "ok",
+    detail: `${merged.length} models on the model page${changed ? "" : " (unchanged)"}.${note}`,
+  };
+}
+
 function configureVpsFirst(): UpdateResult {
   const path = join(homedir(), ".config", "mafia", "config.json");
   try {
@@ -139,7 +231,7 @@ function configureVpsFirst(): UpdateResult {
   }
 }
 
-export function updateMafia(options: { push?: boolean; deploy?: boolean; gcDays?: number; telemetry?: boolean } = {}): UpdateResult[] {
+export function updateMafia(options: { push?: boolean; deploy?: boolean; gcDays?: number; telemetry?: boolean; refresh?: boolean } = {}): UpdateResult[] {
   const results: UpdateResult[] = [];
   results.push(configureVpsFirst());
   const remote = exec("git", ["remote"]);
@@ -163,13 +255,33 @@ export function updateMafia(options: { push?: boolean; deploy?: boolean; gcDays?
     }
   }
   try {
-    const catalog = new ModelCatalogService(loadConfig().stateRoot).discover(true);
+    const stateRoot = loadConfig().stateRoot;
+    const syncState = readSyncState(stateRoot);
+    // The OMP update and the model page run once a week, before the catalog is
+    // read, so that the catalog comes from the new version.
+    const weekly = refreshDue(syncState, Date.now(), installedOmp(), options.refresh);
+    const weeklyResults: UpdateResult[] = [];
+    if (weekly) {
+      writeSyncState(stateRoot, { ...syncState, attemptedAt: Date.now() });
+      weeklyResults.push(updateOmp());
+      // The command prints the whole catalog, which is too long for a result line.
+      const refresh = exec("omp", ["--profile", "mafia", "models", "refresh"]);
+      weeklyResults.push({
+        target: "omp-catalog",
+        status: refresh.ok ? "ok" : "error",
+        detail: refresh.ok ? "Refreshed the OMP model catalog." : refresh.output.slice(0, 200) || "omp models refresh failed and printed nothing.",
+      });
+    }
+    const catalog = new ModelCatalogService(stateRoot).discover(true);
+    results.push(...weeklyResults);
     results.push({ target: "model-catalog", status: "ok", detail: `${catalog.models.length} models from ${catalog.sources.length} harnesses.` });
-    results.push(report(
-      "omp-model-page",
-      exec("omp", ["--profile", "mafia", "config", "reset", "enabledModels"]),
-      "The TUI uses every available authenticated model.",
-    ));
+    if (weekly) {
+      // A failed step leaves the old list and the old state, and the next try
+      // waits an hour.
+      results.push(weeklyResults.some((entry) => entry.status === "error")
+        ? { target: "omp-model-page", status: "skipped", detail: "The OMP update or refresh failed, so the list stays as it is." }
+        : syncModelPage(catalog.models, stateRoot, syncState));
+    }
     results.push(optimizeMafiaProfile());
     results.push(configureCodexOAuthRoles());
   } catch (error) {

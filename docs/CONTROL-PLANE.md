@@ -106,6 +106,37 @@ The checkpoint records the graph, decisions, branches, worktrees, and Git SHAs.
 
 Mafia resets local and VPS isolated worktrees when it restores a checkpoint.
 
+## Weekly OMP Refresh
+
+`mafia update` runs on a timer. Once a week it does these steps:
+
+1. It runs `omp update` when a newer stable OMP exists.
+2. It runs `omp models refresh` for the `mafia` profile.
+3. It sets `enabledModels` to the newest model of every family.
+
+The model page then shows the newest Claude, GPT, Gemini, and Grok models.
+It also shows every model that a role uses, such as the local model.
+A family that is more than one major version behind its provider is not shown.
+GPT models use the `openai-codex` provider, because Mafia sends GPT work through Codex OAuth only.
+When the Codex login is dead, the OpenAI catalog supplies the ids.
+
+The refresh does not run again for seven days, unless one of these is true:
+
+- You pass `mafia update --refresh`.
+- The installed OMP is not the version that the last refresh saw.
+- The last try failed. A failed try waits one hour.
+
+The refresh keeps a model that you added to `enabledModels` by hand.
+It removes a model that the last refresh added and this refresh does not select.
+It never changes `modelRoles`.
+When a role points at an older model of its family, the update result names the role and the newer model.
+
+`mafia doctor` shows `omp-version`. It warns when the installed OMP is not the version in `package.json`.
+After the weekly update installs a new OMP, move the pin and run `bun run check`.
+
+The refresh state is in `omp-sync.json` in the state directory.
+Delete the file to run the refresh on the next pass.
+
 ## VPS
 
 The VPS uses these paths:
