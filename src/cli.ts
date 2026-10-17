@@ -109,7 +109,7 @@ usage:
   mafia route --capability TYPE [--host HOST]
   mafia models [--harness NAME] [--provider NAME] [--find TEXT] [--effort LEVEL] [--refresh] [--json]
   mafia scale --tasks N [--ready N] [--risk low|medium|high]
-  mafia update [--push] [--deploy] [--gc DAYS] [--telemetry]
+  mafia update [--push] [--deploy] [--gc DAYS] [--telemetry] [--refresh]
   mafia mirror [--watch] [--dry-run] [--force] [--host NAME] [--json]
   mafia gc [--dry-run] [--days N] [--host NAME] [--force] [--json]
   mafia quota [--refresh] [--model SELECTOR] [--json]
@@ -380,6 +380,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
         deploy: has(args, "--deploy"),
         gcDays: has(args, "--gc") ? Number(option(args, "--gc") ?? 7) : undefined,
         telemetry: has(args, "--telemetry"),
+        refresh: has(args, "--refresh"),
       }));
       return;
     case "mirror": {
