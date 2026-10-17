@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { join } from "node:path";
 import {
   applyEffort,
   catalogEfforts,
@@ -255,7 +256,10 @@ describe("parity with OMP's own effort parser", () => {
   });
 
   test("every input parses the same as OMP's parseEffort", async () => {
-    const { parseEffort: ompParse } = await import("@oh-my-pi/pi-coding-agent/thinking");
+    // OMP 18.11 moved the parser into pi-tui and stopped exporting it, so the
+    // test loads the source file. A computed path keeps tsc from resolving it.
+    const ompThinking = join(import.meta.dir, "..", "node_modules", "@oh-my-pi", "pi-tui", "src", "thinking.ts");
+    const { parseEffort: ompParse } = await import(ompThinking);
     const inputs = [
       "minimal", "low", "medium", "high", "xhigh", "max",
       "min", "med", "hi", "xhi", "ma", "lo", "m", "x", "l",
