@@ -351,7 +351,7 @@ export const effortLevels = ["minimal", "low", "medium", "high", "xhigh", "max"]
 /**
  * Parse an effort name the way OMP does, including its abbreviations.
  *
- * This mirrors `parseEffort` from `@oh-my-pi/pi-coding-agent/thinking`. It is
+ * This mirrors `parseEffort` in `@oh-my-pi/pi-tui` (src/thinking.ts). It is
  * restated rather than imported because those packages ship raw TypeScript, so
  * importing them costs 250 ms of transpilation on every command. A test asserts
  * this stays identical to OMP's version, which is what a stale local copy of
